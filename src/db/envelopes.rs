@@ -342,6 +342,7 @@ pub async fn soft_delete_envelope(
 }
 
 // Argument struct for creating/updating an envelope instance with optional fields
+#[derive(Debug)]
 pub struct EnvelopeInstanceOptionalArgs<'a> {
     pub name: &'a str,
     pub category: Option<&'a str>,
@@ -358,12 +359,28 @@ fn manage_envelope_instance_in_transaction(
 ) -> Result<String> {
     // Determine the target is_individual status based on args.user_id (more reliable for lookup)
     let target_is_individual_type = args.user_id.is_some();
+    debug!(
+        ?args,
+        "manage_envelope_instance_in_transaction called. Target individual type: {}",
+        target_is_individual_type
+    );
 
     // 1. Check for an ACTIVE envelope first
     let mut stmt_check_active = tx.prepare_cached(
         "SELECT id FROM envelopes WHERE name = ?1 AND IFNULL(user_id, '') = IFNULL(?2, '') AND is_individual = ?3 AND is_deleted = FALSE",
     )?;
-    if stmt_check_active.exists(params![args.name, args.user_id, target_is_individual_type])? {
+    let active_exists_id: Option<i64> = stmt_check_active // Renamed to avoid conflict
+        .query_row(
+            params![args.name, args.user_id, target_is_individual_type],
+            |row| row.get(0),
+        )
+        .optional()?;
+    debug!(
+        "Active check for name='{}', user_id={:?}, is_individual={}: Found ID {:?}",
+        args.name, args.user_id, target_is_individual_type, active_exists_id
+    );
+
+    if active_exists_id.is_some() {
         let msg = format!(
             "ACTIVE envelope '{}' for user {:?} (individual: {}) already exists.",
             args.name,
@@ -379,7 +396,6 @@ fn manage_envelope_instance_in_transaction(
         "SELECT id, category, allocation, is_individual, rollover FROM envelopes
          WHERE name = ?1 AND IFNULL(user_id, '') = IFNULL(?2, '') AND is_individual = ?3 AND is_deleted = TRUE",
     )?;
-    // Fetch existing properties of the soft-deleted envelope
     let deleted_envelope_data: Option<(i64, String, f64, bool, bool)> = stmt_get_deleted
         .query_row(
             params![args.name, args.user_id, target_is_individual_type],
@@ -394,6 +410,13 @@ fn manage_envelope_instance_in_transaction(
             },
         )
         .optional()?;
+    debug!(
+        "Soft-deleted check for name='{}', user_id={:?}, is_individual={}: Found data {:?}",
+        args.name,
+        args.user_id,
+        target_is_individual_type,
+        deleted_envelope_data.as_ref().map(|(id, _, _, _, _)| id)
+    );
 
     if let Some((
         id_to_reenable,
@@ -443,6 +466,7 @@ fn manage_envelope_instance_in_transaction(
             rollover,
             id_to_reenable,
         ])?;
+        debug!("Re-enabling envelope ID: {}", id_to_reenable);
         return Ok(format!(
             "Re-enabled and updated envelope '{}' for {:?} (individual: {}).",
             args.name,
@@ -452,6 +476,7 @@ fn manage_envelope_instance_in_transaction(
     } else {
         // 3. Neither active nor soft-deleted found, INSERT NEW
         // For a new envelope, is_individual status comes from args (defaulting if None)
+        debug!("No active or soft-deleted found. Proceeding to insert new.");
         let is_individual_for_new = args.is_individual.unwrap_or(target_is_individual_type);
         if is_individual_for_new != target_is_individual_type {
             return Err(Error::Command(format!(
@@ -484,11 +509,19 @@ fn manage_envelope_instance_in_transaction(
             args.user_id, // This will be None for shared, Some(id) for individual
             rollover,
         ])?;
+        // In manage_envelope_instance_in_transaction, for INSERT NEW path:
+        let user_display = args.user_id.map_or("Shared", |uid| uid); // Simplifies for shared, but doesn't show Some("...") for individual
+        // For consistency with how Some("...") is displayed by `{:?}` on Option:
+        let user_display_debug = format!("{:?}", args.user_id); // This will be "None" or "Some(\"user_id\")"
+        // The tests were using `args.user_id.unwrap_or("Shared")` in the "ACTIVE" message, let's try to be consistent.
+
+        // Path for "Created new":
+        let user_desc = args.user_id.unwrap_or("Shared"); // This makes sense.
         return Ok(format!(
-            "Created new envelope '{}' for {:?} (individual: {}).",
+            "Created new envelope '{}' for {} (individual: {}).",
             args.name,
-            args.user_id.unwrap_or("Shared"),
-            is_individual_for_new
+            user_desc, // Use this
+            args.is_individual.unwrap_or(target_is_individual_type)
         ));
     }
 }
@@ -566,4 +599,676 @@ pub async fn create_or_reenable_envelope_flexible(
     tx.commit()
         .map_err(|e| Error::Database(format!("Failed to commit transaction: {}", e)))?;
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::EnvelopeConfig;
+    // Import items from the parent module (envelopes.rs)
+    use crate::db::schema; // If you need to call create_tables directly
+    use rusqlite::Connection; // For in-memory specific setup if not using full init_db
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::EnvFilter;
+
+    fn init_test_tracing() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("trace")), // Default to TRACE for tests if RUST_LOG is not set
+            )
+            .with_test_writer() // Crucial for `cargo test` output
+            .try_init(); // Use try_init to avoid panic if already initialized
+    }
+
+    // Helper to create an in-memory DbPool for testing
+    // This helper should set up the schema as well.
+    async fn setup_test_db() -> Result<DbPool> {
+        // Using :memory: for a fresh, temporary database for each test run (or test module)
+        // init_db already creates tables.
+        // If init_db requires a path, we can use a unique name or handle in-memory setup differently
+        // For simplicity, if init_db can handle ":memory:":
+        // let pool = init_db(":memory:").await?;
+
+        // Or, more directly for tests if init_db is complex:
+        let conn = Connection::open_in_memory()
+            .map_err(|e| Error::Database(format!("Test DB: Failed to open in-memory: {}", e)))?;
+        schema::create_tables(&conn)?; // Make sure create_tables is accessible
+        Ok(Arc::new(Mutex::new(conn)))
+    }
+
+    // Helper to quickly insert a test envelope for setup (not using seed_initial_envelopes for focused tests)
+    // This is a simplified insert, real seeding has more logic.
+    fn direct_insert_envelope(
+        conn: &Connection,
+        name: &str,
+        category: &str,
+        allocation: f64,
+        balance: f64,
+        is_individual: bool,
+        user_id: Option<&str>,
+        rollover: bool,
+        is_deleted: bool,
+    ) -> Result<i64> {
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO envelopes (name, category, allocation, balance, is_individual, user_id, rollover, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        let id = stmt.insert(params![
+            name,
+            category,
+            allocation,
+            balance,
+            is_individual,
+            user_id,
+            rollover,
+            is_deleted
+        ])?;
+        Ok(id)
+    }
+
+    // Helper to fetch any envelope by ID, including deleted ones, for test verification
+    fn get_envelope_by_id_for_test(conn: &Connection, id: i64) -> Result<Option<Envelope>> {
+        let mut stmt = conn.prepare_cached(
+             "SELECT id, name, category, allocation, balance, is_individual, user_id, rollover, is_deleted
+              FROM envelopes WHERE id = ?1",
+        )?;
+        stmt.query_row(params![id], |row| {
+            Ok(Envelope {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                category: row.get(2)?,
+                allocation: row.get(3)?,
+                balance: row.get(4)?,
+                is_individual: row.get(5)?,
+                user_id: row.get(6)?,
+                rollover: row.get(7)?,
+                is_deleted: row.get(8)?,
+            })
+        })
+        .optional()
+        .map_err(Error::from)
+    }
+
+    #[tokio::test]
+    async fn test_seed_envelopes_and_get_all_active() -> Result<()> {
+        let db_pool = setup_test_db().await?;
+
+        let mock_envelope_configs = vec![
+            EnvelopeConfig {
+                name: "Groceries".to_string(),
+                category: "necessary".to_string(),
+                allocation: 500.0,
+                is_individual: false,
+                user_id: None,
+                rollover: false,
+            },
+            EnvelopeConfig {
+                name: "Hobby".to_string(),
+                category: "qol".to_string(),
+                allocation: 75.0,
+                is_individual: true,
+                user_id: None, // In EnvelopeConfig, user_id is for the config file
+                rollover: true,
+            },
+        ];
+
+        let app_config_for_test = Arc::new(AppConfig {
+            envelopes_from_toml: mock_envelope_configs,
+            user_id_1: "test_user_1_id".to_string(),
+            user_id_2: "test_user_2_id".to_string(),
+            user_nickname_1: "TestUser1".to_string(),
+            user_nickname_2: "TestUser2".to_string(),
+            database_path: String::new(), // Not used by seed logic directly
+        });
+
+        // Test seeding
+        seed_initial_envelopes(&db_pool, &app_config_for_test).await?;
+
+        // Test getting envelopes
+        let envelopes = get_all_active_envelopes(&db_pool).await?;
+
+        // Assertions
+        // Should be 1 shared ("Groceries") + 2 individual ("Hobby" for User1, "Hobby" for User2)
+        assert_eq!(
+            envelopes.len(),
+            3,
+            "Expected 3 active envelopes after seeding."
+        );
+
+        // Check shared envelope
+        let groceries = envelopes
+            .iter()
+            .find(|e| e.name == "Groceries")
+            .expect("Groceries envelope not found");
+        assert_eq!(groceries.allocation, 500.0);
+        assert_eq!(groceries.balance, 500.0); // Initial balance should equal allocation
+        assert!(!groceries.is_individual);
+        assert!(groceries.user_id.is_none());
+
+        // Check individual envelopes
+        let hobby_user1 = envelopes
+            .iter()
+            .find(|e| e.name == "Hobby" && e.user_id == Some("test_user_1_id".to_string()))
+            .expect("Hobby for User1 not found");
+        assert_eq!(hobby_user1.allocation, 75.0);
+        assert_eq!(hobby_user1.balance, 75.0);
+        assert!(hobby_user1.is_individual);
+        assert!(hobby_user1.rollover);
+
+        let hobby_user2 = envelopes
+            .iter()
+            .find(|e| e.name == "Hobby" && e.user_id == Some("test_user_2_id".to_string()))
+            .expect("Hobby for User2 not found");
+        assert_eq!(hobby_user2.allocation, 75.0);
+        assert_eq!(hobby_user2.balance, 75.0);
+        assert!(hobby_user2.is_individual);
+        assert!(hobby_user2.rollover);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_update_balance() -> Result<()> {
+        let db_pool = setup_test_db().await?;
+        let app_config_for_test = Arc::new(AppConfig {
+            /* ... minimal setup ... */
+            envelopes_from_toml: vec![EnvelopeConfig {
+                name: "Test".to_string(),
+                category: "cat".to_string(),
+                allocation: 100.0,
+                is_individual: false,
+                user_id: None,
+                rollover: false,
+            }],
+            user_id_1: "u1".to_string(),
+            user_id_2: "u2".to_string(),
+            user_nickname_1: "N1".to_string(),
+            user_nickname_2: "N2".to_string(),
+            database_path: String::new(),
+        });
+        seed_initial_envelopes(&db_pool, &app_config_for_test).await?;
+
+        let envelopes_before = get_all_active_envelopes(&db_pool).await?;
+        let test_env_id = envelopes_before
+            .iter()
+            .find(|e| e.name == "Test")
+            .unwrap()
+            .id;
+
+        update_envelope_balance(&db_pool, test_env_id, 42.50).await?;
+
+        let envelopes_after = get_all_active_envelopes(&db_pool).await?;
+        let test_env_after = envelopes_after
+            .iter()
+            .find(|e| e.id == test_env_id)
+            .unwrap();
+        assert_eq!(test_env_after.balance, 42.50);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_soft_delete_shared_envelope() -> Result<()> {
+        let db_pool = setup_test_db().await?;
+        let env_id;
+        {
+            let conn = db_pool.lock().unwrap();
+            env_id = direct_insert_envelope(
+                &conn,
+                "SharedToDelete",
+                "cat",
+                100.0,
+                100.0,
+                false,
+                None,
+                false,
+                false,
+            )?;
+        }
+
+        let deleted = soft_delete_envelope(&db_pool, "SharedToDelete", "any_user_id").await?;
+        assert!(deleted, "Envelope should have been marked as deleted");
+
+        let active_envelopes = get_all_active_envelopes(&db_pool).await?;
+        assert!(
+            !active_envelopes.iter().any(|e| e.id == env_id),
+            "Deleted envelope should not be in active list"
+        );
+
+        // Verify is_deleted flag
+        {
+            let conn = db_pool.lock().unwrap();
+            let env_after_delete =
+                get_envelope_by_id_for_test(&conn, env_id)?.expect("Envelope should still exist");
+            assert!(
+                env_after_delete.is_deleted,
+                "is_deleted flag should be true"
+            );
+        }
+
+        // Try deleting again
+        let deleted_again = soft_delete_envelope(&db_pool, "SharedToDelete", "any_user_id").await?;
+        assert!(
+            !deleted_again,
+            "Attempting to delete an already soft-deleted envelope should return false"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_soft_delete_individual_envelope_owner() -> Result<()> {
+        let db_pool = setup_test_db().await?;
+        let user1 = "user_deleter_id";
+        let env_id;
+        {
+            let conn = db_pool.lock().unwrap();
+            env_id = direct_insert_envelope(
+                &conn,
+                "IndieToDelete",
+                "cat",
+                100.0,
+                100.0,
+                true,
+                Some(user1),
+                false,
+                false,
+            )?;
+        }
+
+        let deleted = soft_delete_envelope(&db_pool, "IndieToDelete", user1).await?;
+        assert!(
+            deleted,
+            "Envelope should have been marked as deleted by owner"
+        );
+
+        let active_envelopes = get_all_active_envelopes(&db_pool).await?;
+        assert!(
+            !active_envelopes
+                .iter()
+                .any(|e| e.id == env_id && e.user_id == Some(user1.to_string())),
+            "Deleted envelope should not be in active list for user"
+        );
+
+        let conn = db_pool.lock().unwrap();
+        let env_after_delete =
+            get_envelope_by_id_for_test(&conn, env_id)?.expect("Envelope should still exist");
+        assert!(env_after_delete.is_deleted);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_soft_delete_individual_envelope_not_owner() -> Result<()> {
+        let db_pool = setup_test_db().await?;
+        let owner_user = "owner_id";
+        let other_user = "other_user_id";
+        {
+            let conn = db_pool.lock().unwrap();
+            direct_insert_envelope(
+                &conn,
+                "IndieProtected",
+                "cat",
+                100.0,
+                100.0,
+                true,
+                Some(owner_user),
+                false,
+                false,
+            )?;
+        }
+
+        // Other user tries to delete
+        let deleted = soft_delete_envelope(&db_pool, "IndieProtected", other_user).await?;
+        // The current soft_delete_envelope logic finds by name AND (user_id = deleter OR user_id IS NULL)
+        // So, if "IndieProtected" is only for "owner_id", other_user won't find it to delete.
+        assert!(
+            !deleted,
+            "Should not delete an individual envelope not owned by the deleter if it's the only one with that name"
+        );
+
+        let active_envelopes = get_all_active_envelopes(&db_pool).await?;
+        assert!(
+            active_envelopes
+                .iter()
+                .any(|e| e.name == "IndieProtected" && !e.is_deleted)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_create_new_shared_envelope_flexible() -> Result<()> {
+        let db_pool = setup_test_db().await?;
+        let args = CreateUpdateEnvelopeArgs {
+            name: "NewShared",
+            category_opt: Some("cat_shared"),
+            allocation_opt: Some(200.0),
+            is_individual_cmd_opt: Some(false),
+            rollover_opt: Some(true),
+        };
+
+        let results = create_or_reenable_envelope_flexible(&db_pool, &args, "u1", "u2").await?;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("Created new envelope 'NewShared' for Shared"));
+
+        let envelopes = get_all_active_envelopes(&db_pool).await?;
+        let new_env = envelopes
+            .iter()
+            .find(|e| e.name == "NewShared")
+            .expect("NewShared not found");
+        assert!(!new_env.is_individual);
+        assert_eq!(new_env.category, "cat_shared");
+        assert_eq!(new_env.allocation, 200.0);
+        assert_eq!(new_env.balance, 200.0); // Balance reset to allocation
+        assert!(new_env.rollover);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_create_new_individual_envelope_flexible() -> Result<()> {
+        init_test_tracing();
+        let db_pool = setup_test_db().await?;
+        let user1 = "user_flex_1";
+        let user2 = "user_flex_2";
+        let args = CreateUpdateEnvelopeArgs {
+            name: "NewIndieFlex",
+            category_opt: Some("cat_indie"),
+            allocation_opt: Some(150.0),
+            is_individual_cmd_opt: Some(true),
+            rollover_opt: Some(false),
+        };
+
+        let results = create_or_reenable_envelope_flexible(&db_pool, &args, user1, user2).await?;
+        assert_eq!(results.len(), 2);
+        // In test_create_new_individual_envelope_flexible
+        let expected_message_part = format!(
+            "Created new envelope '{}' for {} (individual: true).",
+            "NewIndieFlex",
+            user1 // user1 is "user_flex_1"
+        );
+        assert!(
+            results[0].contains(&expected_message_part),
+            "Actual message: '{}', Expected to contain: '{}'",
+            results[0],
+            expected_message_part
+        );
+        let expected_message_part_user2 = format!(
+            "Created new envelope '{}' for {} (individual: true).",
+            "NewIndieFlex",
+            user2 // user2 is "user_flex_2"
+        );
+        assert!(
+            results[1].contains(&expected_message_part_user2),
+            "Actual message: '{}', Expected to contain: '{}'",
+            results[1],
+            expected_message_part_user2
+        );
+
+        let envelopes = get_all_active_envelopes(&db_pool).await?;
+        assert_eq!(envelopes.len(), 2);
+
+        let env1 = envelopes
+            .iter()
+            .find(|e| e.user_id == Some(user1.to_string()))
+            .unwrap();
+        assert_eq!(env1.name, "NewIndieFlex");
+        assert_eq!(env1.allocation, 150.0);
+        assert_eq!(env1.balance, 150.0);
+        assert!(env1.is_individual);
+
+        let env2 = envelopes
+            .iter()
+            .find(|e| e.user_id == Some(user2.to_string()))
+            .unwrap();
+        assert_eq!(env2.name, "NewIndieFlex");
+        assert_eq!(env2.allocation, 150.0);
+        assert_eq!(env2.balance, 150.0);
+        assert!(env2.is_individual);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reenable_soft_deleted_shared_envelope_no_updates() -> Result<()> {
+        let db_pool = setup_test_db().await?;
+        let env_name = "ReenableShared";
+        let original_cat = "original_cat_s";
+        let original_alloc = 123.0;
+        let original_rollover = true;
+
+        // 1. Create and soft-delete
+        let env_id;
+        {
+            let conn = db_pool.lock().unwrap();
+            env_id = direct_insert_envelope(
+                &conn,
+                env_name,
+                original_cat,
+                original_alloc,
+                50.0,
+                false,
+                None,
+                original_rollover,
+                true,
+            )?;
+        }
+
+        // 2. Attempt to "create" (re-enable) with only name and type
+        let args = CreateUpdateEnvelopeArgs {
+            name: env_name,
+            category_opt: None,                 // No update
+            allocation_opt: None,               // No update
+            is_individual_cmd_opt: Some(false), // Specify it's a shared type we're targeting
+            rollover_opt: None,                 // No update
+        };
+        let results = create_or_reenable_envelope_flexible(&db_pool, &args, "u1", "u2").await?;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("Re-enabled and updated envelope"));
+
+        // 3. Verify
+        let conn = db_pool.lock().unwrap();
+        let reenabled_env = get_envelope_by_id_for_test(&conn, env_id)?
+            .expect("Envelope not found after re-enable");
+        assert!(!reenabled_env.is_deleted, "Envelope should be active");
+        assert_eq!(
+            reenabled_env.category, original_cat,
+            "Category should not change"
+        );
+        assert_eq!(
+            reenabled_env.allocation, original_alloc,
+            "Allocation should not change"
+        );
+        assert_eq!(
+            reenabled_env.balance, original_alloc,
+            "Balance should reset to old allocation"
+        );
+        assert_eq!(
+            reenabled_env.rollover, original_rollover,
+            "Rollover should not change"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reenable_soft_deleted_individual_with_updates() -> Result<()> {
+        let db_pool = setup_test_db().await?;
+        let user1 = "user_reenable_1";
+        let user2 = "user_reenable_2"; // Not used in this specific test case's setup/check, but create_or_reenable will process for them
+        let env_name = "ReenableIndieUpdate";
+
+        // 1. Create and soft-delete for user1
+        let env_id_user1;
+        {
+            let conn = db_pool.lock().unwrap();
+            env_id_user1 = direct_insert_envelope(
+                &conn,
+                env_name,
+                "old_cat_i",
+                100.0,
+                20.0,
+                true,
+                Some(user1),
+                false,
+                true,
+            )?;
+            // Also insert for user2 so the re-enable logic finds something for user2 as well
+            direct_insert_envelope(
+                &conn,
+                env_name,
+                "old_cat_i",
+                100.0,
+                30.0,
+                true,
+                Some(user2),
+                false,
+                true,
+            )?;
+        }
+
+        // 2. Attempt to "create" (re-enable) with name, type, and new allocation/category
+        let new_cat = "new_cat_i_updated";
+        let new_alloc = 250.0;
+        let new_rollover = true;
+        let args = CreateUpdateEnvelopeArgs {
+            name: env_name,
+            category_opt: Some(new_cat),
+            allocation_opt: Some(new_alloc),
+            is_individual_cmd_opt: Some(true),
+            rollover_opt: Some(new_rollover),
+        };
+        let results = create_or_reenable_envelope_flexible(&db_pool, &args, user1, user2).await?;
+        assert_eq!(results.len(), 2); // Should process for both users
+        assert!(
+            results
+                .iter()
+                .all(|r| r.contains("Re-enabled and updated envelope"))
+        );
+
+        // 3. Verify for user1
+        {
+            let conn = db_pool.lock().unwrap();
+            let reenabled_env_user1 = get_envelope_by_id_for_test(&conn, env_id_user1)?
+                .expect("Envelope for user1 not found");
+            assert!(!reenabled_env_user1.is_deleted);
+            assert_eq!(reenabled_env_user1.user_id.as_deref(), Some(user1));
+            assert_eq!(reenabled_env_user1.category, new_cat);
+            assert_eq!(reenabled_env_user1.allocation, new_alloc);
+            assert_eq!(reenabled_env_user1.balance, new_alloc); // Balance reset to new allocation
+            assert_eq!(reenabled_env_user1.rollover, new_rollover);
+        }
+
+        // You would also verify for user2 similarly
+        let env_user2 = get_all_active_envelopes(&db_pool)
+            .await?
+            .into_iter()
+            .find(|e| e.name == env_name && e.user_id.as_deref() == Some(user2))
+            .expect("Envelope for user2 not found after re-enable");
+        assert!(!env_user2.is_deleted);
+        assert_eq!(env_user2.category, new_cat);
+        assert_eq!(env_user2.allocation, new_alloc);
+        assert_eq!(env_user2.balance, new_alloc);
+        assert_eq!(env_user2.rollover, new_rollover);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_create_envelope_when_active_exists_skips() -> Result<()> {
+        init_test_tracing();
+        let db_pool = setup_test_db().await?;
+        let env_name = "ActiveExists";
+        {
+            let conn = db_pool.lock().unwrap();
+            direct_insert_envelope(
+                &conn, env_name, "cat", 100.0, 100.0, false, None, false, false,
+            )?;
+        }
+
+        let args = CreateUpdateEnvelopeArgs {
+            name: env_name, // Same name as active one
+            category_opt: Some("new_cat"),
+            allocation_opt: Some(200.0),
+            is_individual_cmd_opt: Some(false),
+            rollover_opt: Some(false),
+        };
+        let results = create_or_reenable_envelope_flexible(&db_pool, &args, "u1", "u2").await?;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].starts_with("ACTIVE envelope 'ActiveExists' for user \"Shared\" (individual: false) already exists."), "Message was: {}", results[0]);
+
+        // Verify no new envelope was created and original is unchanged (except if update logic was different)
+        let envelopes = get_all_active_envelopes(&db_pool).await?;
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0].allocation, 100.0); // Should still be old allocation
+        Ok(())
+    }
+
+    // Test for get_user_or_shared_envelope
+    #[tokio::test]
+    async fn test_get_user_or_shared_envelope_logic() -> Result<()> {
+        let db_pool = setup_test_db().await?;
+        let user1 = "test_user_fetch_1";
+        let user2 = "test_user_fetch_2"; // unused in this specific test path, but good for context
+
+        // Setup:
+        // 1. Shared envelope "Common"
+        // 2. User1's individual envelope "Personal"
+        // 3. User1's individual envelope "Common" (to test priority)
+        {
+            let conn = db_pool.lock().unwrap();
+            direct_insert_envelope(
+                &conn, "Common", "shared", 100.0, 100.0, false, None, false, false,
+            )?;
+            direct_insert_envelope(
+                &conn,
+                "Personal",
+                "indie_u1",
+                50.0,
+                50.0,
+                true,
+                Some(user1),
+                false,
+                false,
+            )?;
+            direct_insert_envelope(
+                &conn,
+                "Common",
+                "indie_u1_common",
+                75.0,
+                75.0,
+                true,
+                Some(user1),
+                false,
+                false,
+            )?;
+        }
+
+        // Test Case 1: User1 asks for "Common" -> should get their individual "Common"
+        let env1 = get_user_or_shared_envelope(&db_pool, "Common", user1)
+            .await?
+            .expect("Envelope not found");
+        assert!(env1.is_individual);
+        assert_eq!(env1.user_id.as_deref(), Some(user1));
+        assert_eq!(env1.allocation, 75.0); // User1's "Common" allocation
+
+        // Test Case 2: User1 asks for "Personal" -> should get their "Personal"
+        let env2 = get_user_or_shared_envelope(&db_pool, "Personal", user1)
+            .await?
+            .expect("Envelope not found");
+        assert!(env2.is_individual);
+        assert_eq!(env2.user_id.as_deref(), Some(user1));
+        assert_eq!(env2.allocation, 50.0);
+
+        // Test Case 3: User2 asks for "Common" -> should get the shared "Common"
+        // (because User2 doesn't have an individual "Common" in this test setup)
+        let env3 = get_user_or_shared_envelope(&db_pool, "Common", user2)
+            .await?
+            .expect("Envelope not found");
+        assert!(!env3.is_individual); // Should be the shared one
+        assert!(env3.user_id.is_none());
+        assert_eq!(env3.allocation, 100.0); // Shared "Common" allocation
+
+        // Test Case 4: Ask for non-existent envelope
+        let env4 = get_user_or_shared_envelope(&db_pool, "DoesNotExist", user1).await?;
+        assert!(env4.is_none());
+
+        Ok(())
+    }
 }
