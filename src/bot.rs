@@ -3,7 +3,7 @@ use crate::db::DbPool;
 use crate::{commands, errors};
 use poise::serenity_prelude as serenity;
 use std::sync::Arc;
-use tracing::{info, instrument};
+use tracing::{error, info, instrument, warn};
 
 // User data, which is stored and accessible in all command invocations
 #[derive(Debug)]
@@ -47,7 +47,11 @@ pub async fn run_bot(
             commands: vec![
                 commands::ping(),
                 commands::report(),
-                // Add more commands here
+                commands::spend(),
+                commands::addfunds(),
+                commands::update(),
+                commands::delete_envelope(),
+                commands::create_envelope(),
             ],
             on_error: |error| Box::pin(on_error(error)),
             ..Default::default()
@@ -57,16 +61,59 @@ pub async fn run_bot(
             let db_pool_clone_for_data = db_pool.clone();
             Box::pin(async move {
                 info!("Logged in as {}", ready.user.name);
-                info!("Registering commands globally...");
-                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                // Example for guild-specific registration (faster updates during dev):
-                // if let Ok(guild_id_str) = env::var("DEV_GUILD_ID") {
-                //     if let Ok(guild_id_val) = guild_id_str.parse::<u64>() {
-                //         let guild_id = serenity::GuildId::new(guild_id_val);
-                //         poise::builtins::register_in_guild(ctx, &framework.options().commands, guild_id).await?;
-                //         info!("Registered commands in guild {}", guild_id);
-                //     }
-                // }
+                // Log the names of the commands poise is aware of before registration
+                let command_names_to_register: Vec<String> = framework
+                    .options()
+                    .commands
+                    .iter()
+                    .map(|cmd| cmd.name.clone()) // Or cmd.qualified_name for more detail
+                    .collect();
+                info!(
+                    "Poise is configured to register the following commands: {:?}",
+                    command_names_to_register
+                );
+                if let Ok(guild_id_str) = std::env::var("DEV_GUILD_ID") {
+                    if let Ok(guild_id_val) = guild_id_str.parse::<u64>() {
+                        let guild_id = serenity::GuildId::new(guild_id_val);
+                        info!(
+                            "Attempting to register commands in development guild: {}",
+                            guild_id
+                        );
+                        match poise::builtins::register_in_guild(
+                            ctx,
+                            &framework.options().commands,
+                            guild_id,
+                        )
+                        .await
+                        {
+                            Ok(_) => info!(
+                                "Successfully submitted command registration to guild {}.",
+                                guild_id
+                            ),
+                            Err(e) => {
+                                error!("Failed to register commands in guild {}: {:?}", guild_id, e)
+                            }
+                        }
+                    } else {
+                        warn!(
+                            "DEV_GUILD_ID is set but is not a valid u64: {}",
+                            guild_id_str
+                        );
+                        // Fallback to global if guild registration is intended only for dev with valid ID
+                        // Or handle as an error if guild registration is critical for dev
+                    }
+                } else {
+                    info!("DEV_GUILD_ID not set. Registering commands globally...");
+                    // Fallback to global registration if no dev guild ID is set
+                    match poise::builtins::register_globally(ctx, &framework.options().commands)
+                        .await
+                    {
+                        Ok(_) => {
+                            info!("Successfully submitted global command registration to Discord.")
+                        }
+                        Err(e) => error!("Failed to register commands globally: {:?}", e),
+                    }
+                }
                 Ok(Data {
                     app_config: config_clone_for_data,
                     db_pool: db_pool_clone_for_data,
