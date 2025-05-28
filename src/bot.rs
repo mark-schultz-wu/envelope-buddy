@@ -53,6 +53,7 @@ pub async fn run_bot(
                 commands::update(),
                 commands::delete_envelope(),
                 commands::create_envelope(),
+                commands::testautocomplete(),
             ],
             on_error: |error| Box::pin(on_error(error)),
             ..Default::default()
@@ -73,6 +74,13 @@ pub async fn run_bot(
                     "Poise is configured to register the following commands: {:?}",
                     command_names_to_register
                 );
+                info!("Attempting to clear all global commands...");
+                let empty_commands_slice: &[poise::Command<Data, crate::errors::Error>] = &[];
+                match poise::builtins::register_globally(ctx, empty_commands_slice).await {
+                    // Pass an empty slice
+                    Ok(_) => info!("Successfully cleared all global commands."),
+                    Err(e) => error!("Failed to clear global commands: {:?}", e),
+                }
                 if let Ok(guild_id_str) = std::env::var("DEV_GUILD_ID") {
                     if let Ok(guild_id_val) = guild_id_str.parse::<u64>() {
                         let guild_id = serenity::GuildId::new(guild_id_val);

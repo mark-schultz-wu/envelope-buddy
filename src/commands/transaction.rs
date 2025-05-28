@@ -4,15 +4,18 @@ use crate::commands::utils::{
 };
 use crate::db;
 use poise::serenity_prelude as serenity;
-use tracing::{info, instrument, warn};
+use poise::serenity_prelude::AutocompleteChoice;
+use tracing::{error, info, instrument, trace, warn};
 
 /// Record an expense from an envelope.
 #[poise::command(slash_command)]
 #[instrument(skip(ctx))]
 pub async fn spend(
     ctx: Context<'_>,
-    #[description = "Name of the envelope to spend from"] envelope_name: String,
-    #[description = "Amount to spend (e.g., 10.50)"] amount: f64,
+    #[description = "Name of the envelope to spend from"]
+    #[autocomplete = "envelope_name_autocomplete"]
+    envelope_name: String,
+    #[description = "Amount to spend (e.g., 50.00)"] amount: f64,
     #[description = "Description of the expense (optional)"] description: Option<String>,
 ) -> Result<(), Error> {
     let author_id_str = ctx.author().id.to_string();
@@ -150,7 +153,9 @@ pub async fn spend(
 #[instrument(skip(ctx))]
 pub async fn addfunds(
     ctx: Context<'_>,
-    #[description = "Name of the envelope to add funds to"] envelope_name: String,
+    #[description = "Name of the envelope to add funds to"]
+    #[autocomplete = "envelope_name_autocomplete"]
+    envelope_name: String,
     #[description = "Amount to add (e.g., 50.00)"] amount: f64,
     #[description = "Reason for the addition (optional)"] description: Option<String>,
 ) -> Result<(), Error> {
@@ -266,4 +271,35 @@ pub async fn addfunds(
     .await?;
 
     Ok(())
+}
+
+async fn envelope_name_autocomplete(ctx: Context<'_>, partial: &str) -> Vec<AutocompleteChoice> {
+    trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request received for envelope_name");
+
+    let data = ctx.data();
+    let db_pool = &data.db_pool;
+    let author_id_str = ctx.author().id.to_string();
+    trace!(author_id = %author_id_str, "Author ID for autocomplete query");
+
+    match db::suggest_accessible_envelope_names(db_pool, &author_id_str, partial).await {
+        Ok(names) => {
+            trace!(fetched_names = ?names, "Names fetched from DB for autocomplete");
+            let choices: Vec<AutocompleteChoice> = names
+                .into_iter()
+                .map(|name_str| {
+                    trace!(name = %name_str, value = %name_str, "Mapping to AutocompleteChoice");
+                    AutocompleteChoice::new(name_str.clone(), name_str)
+                })
+                .collect();
+            trace!(returned_choices = ?choices, "Returning choices for autocomplete");
+            choices
+        }
+        Err(e) => {
+            error!(
+                "Autocomplete: Failed to fetch envelope suggestions: {:?}",
+                e
+            );
+            Vec::new()
+        }
+    }
 }

@@ -5,7 +5,7 @@ use crate::models::Envelope;
 use rusqlite::Error as RusqliteError;
 use rusqlite::{OptionalExtension, params};
 use std::sync::Arc;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 #[instrument(skip(pool, config))]
 pub async fn seed_initial_envelopes(pool: &DbPool, config: &Arc<AppConfig>) -> Result<()> {
@@ -594,6 +594,66 @@ pub async fn create_or_reenable_envelope_flexible(
     tx.commit()
         .map_err(|e| Error::Database(format!("Failed to commit transaction: {}", e)))?;
     Ok(results)
+}
+
+#[instrument(skip(pool))]
+pub async fn suggest_accessible_envelope_names(
+    pool: &DbPool,
+    user_id: &str,
+    partial_name: &str,
+) -> Result<Vec<String>> {
+    trace!(
+        user_id,
+        partial_name, "Attempting to suggest envelope names"
+    );
+
+    let conn = pool
+        .lock()
+        .map_err(|_| Error::Database("Failed to acquire DB lock for suggestions".to_string()))?;
+
+    let lower_partial_name = partial_name.to_lowercase();
+    let search_pattern = format!("{}%", lower_partial_name);
+    trace!(
+        lower_partial_name,
+        search_pattern, "Constructed search pattern"
+    );
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT name FROM envelopes
+         WHERE LOWER(name) LIKE ?1 AND is_deleted = FALSE
+         AND (user_id = ?2 OR user_id IS NULL)
+         ORDER BY name ASC
+         LIMIT 25",
+    )?;
+    trace!("Prepared SQL statement for suggestions");
+
+    let names_iter = stmt.query_map(params![search_pattern, user_id], |row| {
+        let name_val: String = row.get(0)?;
+        trace!(name_val, "Fetched name from DB row");
+        Ok(name_val)
+    })?;
+
+    let mut names = Vec::new();
+    for name_result in names_iter {
+        match name_result {
+            Ok(name) => {
+                trace!(name, "Adding to suggestions list");
+                names.push(name);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Error mapping a row for envelope name suggestion");
+                // Optionally decide if one error should stop all suggestions
+            }
+        }
+    }
+    debug!(
+        "Suggested {} envelope names for user '{}' with partial '{}': {:?}",
+        names.len(),
+        user_id,
+        partial_name,
+        names
+    );
+    Ok(names)
 }
 
 #[cfg(test)]

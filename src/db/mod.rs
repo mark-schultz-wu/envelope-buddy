@@ -9,7 +9,7 @@ pub use connection::{DbPool, init_db};
 pub use envelopes::{
     CreateUpdateEnvelopeArgs, create_or_reenable_envelope_flexible, get_all_active_envelopes,
     get_user_or_shared_envelope, seed_initial_envelopes, soft_delete_envelope,
-    update_envelope_balance,
+    suggest_accessible_envelope_names, update_envelope_balance,
 };
 pub use system_state::{get_system_state_value, set_system_state_value};
 pub use transactions::{
