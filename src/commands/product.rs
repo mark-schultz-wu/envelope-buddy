@@ -5,6 +5,7 @@ use crate::commands::utils::{
     envelope_name_autocomplete, generate_single_envelope_report_field_data,
     get_current_month_date_info,
 };
+use crate::models::Envelope;
 use crate::{Error, Result, db};
 use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::AutocompleteChoice;
@@ -38,7 +39,8 @@ pub async fn product(ctx: Context<'_>) -> Result<()> {
     // This body is called if the user types just /product
     // You can provide help text for the subcommands here.
     let help_text = "Product management command. Available subcommands:\n\
-                     `/product add <name> <price> <envelope> [description]` - Add a new product.\n\
+                     `/product add name:<name> total_price:<price> envelope:<envelope_name> [quantity:<num>] [description:<text>]`\n\
+                    > Adds a new product. Unit price is calculated from total_price and quantity (defaults to 1).\n\
                      `/product list` - View all defined products.\n\
                      `/product update <name> <total_price> [quantity]` - Update a product's price.\n\
                      `/product use <name> [quantity]` - Record an expense using a product.";
@@ -46,24 +48,30 @@ pub async fn product(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Adds a new fixed-price product linked to an envelope.
-#[poise::command(slash_command, rename = "add")]
+/// Adds a new fixed-price product, calculating unit price from total price and quantity.
+#[poise::command(slash_command, rename = "product_add")]
 #[instrument(skip(ctx))]
 pub async fn product_add(
     ctx: Context<'_>,
-    #[description = "Unique name for the product (e.g., 'Coffee Shop Latte')"] name: String,
-    #[description = "Price of the product (e.g., 4.75)"] price: f64,
+    #[description = "Unique name for the product (e.g., '12-Pack Soda')"] name: String,
+    #[description = "Total price paid for the given quantity (e.g., 6.99)"] total_price: f64,
     #[description = "Envelope this product's cost should come from"]
     #[autocomplete = "envelope_name_autocomplete"]
     envelope_name: String,
+    #[description = "Quantity for the total price (e.g., 12). Defaults to 1."] quantity_opt: Option<
+        f64,
+    >, // Optional quantity, f64 for flexibility
     #[description = "Optional description for the product"] description: Option<String>,
 ) -> Result<()> {
-    let author_id_str = ctx.author().id.to_string(); // For context, not directly used for adding product
+    let author_id_str = ctx.author().id.to_string();
+    let quantity = quantity_opt.unwrap_or(1.0); // Default quantity to 1.0 if not provided
+
     info!(
-        "Product_add command from {}: name='{}', price={}, envelope_name='{}', desc={:?}",
+        "Product_add command from {}: name='{}', total_price={}, quantity={}, envelope_name='{}', desc={:?}",
         ctx.author().name,
         name,
-        price,
+        total_price,
+        quantity,
         envelope_name,
         description
     );
@@ -72,17 +80,24 @@ pub async fn product_add(
         ctx.say("Product name cannot be empty.").await?;
         return Ok(());
     }
-    if price < 0.0 {
-        // The db::add_product function also checks this, but early exit is good.
-        ctx.say("Product price cannot be negative.").await?;
+    if total_price < 0.0 {
+        ctx.say("Total price cannot be negative.").await?;
         return Ok(());
     }
+    if quantity <= 0.0 {
+        ctx.say("Quantity must be a positive number.").await?;
+        return Ok(());
+    }
+
+    let unit_price = total_price / quantity;
+    // Optional: Round the unit price if desired, e.g., to 2 decimal places
+    // let unit_price_rounded = (unit_price * 100.0).round() / 100.0;
+    // For now, we'll store the precise f64 value. db::add_product already checks if unit_price < 0.
 
     let data = ctx.data();
     let db_pool = &data.db_pool;
 
     // 1. Find the envelope ID for the given envelope_name
-    //    This must be an envelope the user can conceptually associate with (shared or their own)
     let envelope_to_link =
         match db::get_user_or_shared_envelope(db_pool, &envelope_name, &author_id_str).await? {
             Some(env) => env,
@@ -95,28 +110,39 @@ pub async fn product_add(
                 return Ok(());
             }
         };
-    // Here, we might want to consider if *any* user can add a product linked to any shared envelope,
-    // or if only specific users can link to their individual envelopes.
-    // For now, get_user_or_shared_envelope ensures it's accessible to the user.
 
-    // 2. Add the product to the database
+    // 2. Add the product to the database with the calculated unit_price
     match db::add_product(
         db_pool,
         &name,
-        price,
+        unit_price,
         envelope_to_link.id,
         description.as_deref(),
     )
     .await
     {
         Ok(product_id) => {
+            let price_calculation_note = if quantity_opt.is_some() && quantity != 1.0 {
+                format!(
+                    " (calculated from ${:.2} for {} items)",
+                    total_price, quantity
+                )
+            } else {
+                String::new()
+            };
+
             info!(
-                "Product '{}' (ID: {}) added successfully, linked to envelope '{}' (ID: {}).",
-                name, product_id, envelope_to_link.name, envelope_to_link.id
+                "Product '{}' (ID: {}) added successfully, unit price ${:.2}{}, linked to envelope '{}' (ID: {}).",
+                name,
+                product_id,
+                unit_price,
+                price_calculation_note,
+                envelope_to_link.name,
+                envelope_to_link.id
             );
             ctx.say(format!(
-                "✅ Product '{}' added with price ${:.2}, linked to envelope '{}'.",
-                name, price, envelope_to_link.name
+                "✅ Product '{}' added with unit price **${:.2}**{} and linked to envelope '{}'.",
+                name, unit_price, price_calculation_note, envelope_to_link.name
             ))
             .await?;
         }
@@ -199,9 +225,12 @@ pub async fn product_use(
 ) -> Result<()> {
     let author_id_str = ctx.author().id.to_string();
     let quantity = quantity_opt.unwrap_or(1); // Default quantity to 1
+
     info!(
-        "UseProduct command from {}: product_name='{}', quantity={}",
+        "'/product {}' command from {} ({}): product_name='{}', quantity={}",
+        ctx.command().name, // Gets the actual invoked subcommand name e.g. "consume"
         ctx.author().name,
+        author_id_str,
         name,
         quantity
     );
@@ -213,7 +242,7 @@ pub async fn product_use(
 
     let data = ctx.data();
     let db_pool = &data.db_pool;
-    let app_config = Arc::clone(&data.app_config);
+    let app_config = Arc::clone(&data.app_config); // For nicknames in mini-report
 
     // 1. Fetch the product
     let product = match db::get_product_by_name(db_pool, &name).await? {
@@ -224,55 +253,105 @@ pub async fn product_use(
         }
     };
 
-    // 2. Fetch the linked envelope
-    let linked_envelope = match db::get_envelope_by_id(db_pool, product.envelope_id).await? {
+    // 2. Fetch the "template" envelope linked in the product definition
+    let template_envelope = match db::get_envelope_by_id(db_pool, product.envelope_id).await? {
         Some(env) => {
-            if env.is_deleted {
-                // Should not happen if get_envelope_by_id filters active
-                ctx.say(format!(
-                    "The envelope '{}' linked to product '{}' is deleted.",
-                    env.name, product.name
-                ))
-                .await?;
-                return Ok(());
-            }
+            // get_envelope_by_id already checks for is_deleted = FALSE
             env
         }
         None => {
             error!(
-                "Product '{}' (ID: {}) links to a non-existent envelope_id: {}. This indicates a data integrity issue.",
+                "Data Integrity Issue: Product '{}' (ID: {}) links to a non-existent or deleted envelope_id: {}.",
                 product.name, product.id, product.envelope_id
             );
-            ctx.say(format!("Error: The envelope linked to product '{}' could not be found. Please notify an admin.", product.name)).await?;
+            ctx.say(format!(
+                "Error: The base envelope linked to product '{}' is missing or inactive. Please notify an admin.",
+                product.name
+            )).await?;
             return Ok(());
         }
     };
 
-    // 3. Verify user access to the envelope
-    if linked_envelope.is_individual && linked_envelope.user_id.as_deref() != Some(&author_id_str) {
-        warn!(
-            "User {} tried to use product '{}' linked to {}'s envelope '{}'. Denied.",
-            author_id_str,
-            product.name,
-            linked_envelope.user_id.as_deref().unwrap_or("unknown"),
-            linked_envelope.name
+    // 3. Determine the actual target envelope for spending
+    #[allow(clippy::needless_late_init)]
+    let actual_target_envelope: Envelope;
+
+    if template_envelope.is_individual {
+        // If the product was defined against an individual envelope instance,
+        // find the command issuer's specific instance of an envelope with the SAME NAME.
+        info!(
+            "Product '{}' is linked to an individual envelope type ('{}'). Attempting to find instance for user {}.",
+            product.name, template_envelope.name, author_id_str
         );
-        ctx.say(format!(
-            "You cannot use product '{}' as its linked envelope ('{}') does not belong to you.",
-            product.name, linked_envelope.name
-        ))
-        .await?;
-        return Ok(());
+
+        actual_target_envelope = match db::get_user_or_shared_envelope(
+            db_pool,
+            &template_envelope.name,
+            &author_id_str,
+        )
+        .await?
+        {
+            Some(user_specific_env) => {
+                // Ensure it's truly the user's own, active, individual envelope.
+                if !user_specific_env.is_individual
+                    || user_specific_env.user_id.as_deref() != Some(&author_id_str)
+                {
+                    warn!(
+                        "User {} does not have a matching individual envelope named '{}' for product '{}', or it's not individual.",
+                        author_id_str, template_envelope.name, product.name
+                    );
+                    ctx.say(format!(
+                        "To use product '{}', you need an active individual envelope named '{}'. Yours could not be found or is not setup correctly.",
+                        product.name, template_envelope.name
+                    )).await?;
+                    return Ok(());
+                }
+                if user_specific_env.is_deleted {
+                    // Should be caught by get_user_or_shared_envelope if it filters deleted
+                    ctx.say(format!(
+                        "Your individual envelope '{}' is currently deleted and cannot be used.",
+                        template_envelope.name
+                    ))
+                    .await?;
+                    return Ok(());
+                }
+                user_specific_env
+            }
+            None => {
+                ctx.say(format!(
+                    "You don't seem to have an individual envelope named '{}' to use with product '{}'.",
+                    template_envelope.name, product.name
+                )).await?;
+                return Ok(());
+            }
+        };
+    } else {
+        // If the product was linked to a shared envelope, use that directly.
+        info!(
+            "Product '{}' is linked to shared envelope '{}'.",
+            product.name, template_envelope.name
+        );
+        actual_target_envelope = template_envelope;
     }
 
-    // 4. Calculate cost and perform spend
+    // 4. Calculate cost and perform spend using actual_target_envelope
     let total_cost = product.price * quantity as f64;
-    let new_balance = linked_envelope.balance - total_cost;
+    let new_balance = actual_target_envelope.balance - total_cost;
 
-    // (Optional: Overdraft check for the envelope)
-    // if new_balance < 0.0 { ... }
+    // Optional: Overdraft check for the actual_target_envelope
+    if new_balance < 0.0 {
+        // Example: Allow overdraft but warn, or prevent it:
+        warn!(
+            "Envelope '{}' will be overdrafted. Current: ${:.2}, Spending: ${:.2}, New: ${:.2}",
+            actual_target_envelope.name, actual_target_envelope.balance, total_cost, new_balance
+        );
+        // To prevent overdraft:
+        // ctx.say(format!("Spending ${:.2} from '{}' would overdraft it (current balance ${:.2}). Transaction cancelled.",
+        //                 total_cost, actual_target_envelope.name, actual_target_envelope.balance)).await?;
+        // return Ok(());
+    }
 
-    db::update_envelope_balance(db_pool, linked_envelope.id, new_balance).await?;
+    db::update_envelope_balance(db_pool, actual_target_envelope.id, new_balance).await?;
 
     let transaction_description = format!(
         "Product: {} (x{}){}",
@@ -281,14 +360,14 @@ pub async fn product_use(
         product
             .description
             .as_ref()
-            .map_or("".to_string(), |d| format!(" - {}", d))
+            .map_or_else(String::new, |d| format!(" - {}", d))
     );
     let discord_interaction_id = ctx.id().to_string();
 
     db::create_transaction(
         db_pool,
-        linked_envelope.id,
-        total_cost, // The amount spent
+        actual_target_envelope.id,
+        total_cost, // The amount spent (positive)
         &transaction_description,
         &author_id_str,
         Some(&discord_interaction_id),
@@ -297,19 +376,23 @@ pub async fn product_use(
     .await?;
 
     // 5. Reply with confirmation and mini-report
-    let updated_envelope_for_report = db::get_envelope_by_id(db_pool, linked_envelope.id)
-        .await?
-        .ok_or_else(|| {
-            Error::Command(format!(
-                "Failed to fetch updated envelope {} for mini-report after using product.",
-                linked_envelope.name
-            ))
-        })?;
+    // Fetch the *very latest* state of the envelope for the report, as balance has changed.
+    let final_envelope_state_for_report = db::get_envelope_by_id(
+        db_pool,
+        actual_target_envelope.id,
+    )
+    .await?
+    .ok_or_else(|| {
+        Error::Command(format!(
+            "Critical error: Failed to re-fetch envelope {} for mini-report after using product.",
+            actual_target_envelope.name
+        ))
+    })?;
 
     let (_now_local_date, current_day_of_month, days_in_month, year, month) =
-        get_current_month_date_info();
+        get_current_month_date_info(); // Assuming this util is accessible
     let (field_name, field_value) = generate_single_envelope_report_field_data(
-        &updated_envelope_for_report,
+        &final_envelope_state_for_report, // Use the freshest envelope data
         &app_config,
         db_pool,
         current_day_of_month,
@@ -322,18 +405,19 @@ pub async fn product_use(
     let mini_report_embed = serenity::CreateEmbed::default()
         .title(format!("Update for: {}", field_name))
         .description(field_value)
-        .color(0xF1C40F); // Yellow for spend
+        .color(0xF1C40F); // Yellow for spend/update
 
+    // Optional: Decide if you still want the separate content text or if embed is enough
     let confirmation_text = format!(
-        "Used product '{}' (x{}) from envelope '{}'. Total cost: ${:.2}.\nNew balance for '{}': ${:.2}.",
-        product.name, quantity, linked_envelope.name, total_cost, linked_envelope.name, new_balance
+        "Used product '{}' (x{}) from envelope '{}'. Total cost: ${:.2}.",
+        product.name, quantity, final_envelope_state_for_report.name, total_cost
     );
 
     ctx.send(
         poise::CreateReply::default()
-            .content(confirmation_text) // Keeping this for clarity of action
+            .content(confirmation_text) // You can remove this if the embed is sufficient
             .embed(mini_report_embed)
-            .ephemeral(false),
+            .ephemeral(false), // Make it visible to everyone
     )
     .await?;
 

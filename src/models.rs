@@ -41,14 +41,3 @@ pub struct Product {
     #[serde(default)] // Handles cases where it might not be loaded from DB directly
     pub envelope_name: Option<String>,
 }
-
-// Add other models like Product, Shortcut, SystemState as needed
-// Example for Product:
-// #[derive(Debug, Serialize, Deserialize)]
-// pub struct Product {
-//     pub id: i64,
-//     pub name: String,
-//     pub price: f64,
-//     pub envelope_id: i64,
-//     pub description: Option<String>,
-// }

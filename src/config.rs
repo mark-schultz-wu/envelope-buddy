@@ -1,7 +1,7 @@
 use crate::errors::{Error, Result};
 use serde::Deserialize;
 use std::{env, fs, path::Path};
-use tracing::{debug, error, info, instrument}; // Add instrument
+use tracing::{debug, error, info, instrument};
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct EnvelopeConfig {
@@ -10,6 +10,7 @@ pub struct EnvelopeConfig {
     pub allocation: f64,
     pub is_individual: bool,
     #[serde(default)] // For config.toml, user_id might be absent for shared envelopes
+    #[allow(dead_code)]
     pub user_id: Option<String>, // Only relevant if is_individual is true
     pub rollover: bool,
 }
