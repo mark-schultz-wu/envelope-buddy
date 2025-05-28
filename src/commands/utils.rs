@@ -83,3 +83,50 @@ pub(crate) async fn generate_single_envelope_report_field_data(
     );
     Ok((field_name, field_value))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Datelike, NaiveDate};
+
+    #[test]
+    fn test_get_current_month_date_info_basic() {
+        let (now_local_date, current_day_f64, days_in_month_f64, year, month) =
+            get_current_month_date_info();
+
+        assert_eq!(year, now_local_date.year());
+        assert_eq!(month, now_local_date.month());
+        assert_eq!(current_day_f64, now_local_date.day() as f64);
+
+        // Test days_in_month for a known month (e.g., if current month is March 2024 -> 31 days)
+        // This part is tricky because it depends on the actual current date when tests run.
+        // A more robust test would mock Local::now() or test with fixed dates.
+        // For now, let's just check it's a reasonable number.
+        assert!((28.0..=31.0).contains(&days_in_month_f64));
+
+        // Example for a fixed date (how you might test days_in_month more robustly)
+        let test_date = NaiveDate::from_ymd_opt(2024, 2, 15).unwrap(); // Feb 2024 (leap) -> 29 days
+        let days_in_feb_2024 = if test_date.month() == 12 {
+            NaiveDate::from_ymd_opt(test_date.year() + 1, 1, 1)
+        } else {
+            NaiveDate::from_ymd_opt(test_date.year(), test_date.month() + 1, 1)
+        }
+        .unwrap()
+        .pred_opt()
+        .unwrap()
+        .day();
+        assert_eq!(days_in_feb_2024, 29);
+
+        let test_date_apr = NaiveDate::from_ymd_opt(2023, 4, 10).unwrap(); // April -> 30 days
+        let days_in_apr_2023 = if test_date_apr.month() == 12 {
+            NaiveDate::from_ymd_opt(test_date_apr.year() + 1, 1, 1)
+        } else {
+            NaiveDate::from_ymd_opt(test_date_apr.year(), test_date_apr.month() + 1, 1)
+        }
+        .unwrap()
+        .pred_opt()
+        .unwrap()
+        .day();
+        assert_eq!(days_in_apr_2023, 30);
+    }
+}

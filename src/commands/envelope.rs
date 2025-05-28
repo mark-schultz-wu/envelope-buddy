@@ -270,3 +270,185 @@ pub async fn create_envelope(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::db::{self, DbPool};
+    use crate::errors::Result;
+    use crate::models::Envelope;
+    use chrono::{DateTime, TimeZone, Utc};
+    use rusqlite::params;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::EnvFilter;
+
+    // Helper to init tracing for tests
+    fn init_test_tracing() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("trace")),
+            )
+            .with_test_writer()
+            .try_init();
+    }
+
+    // You'll need your setup_test_db() helper here or from a shared location
+    async fn setup_test_db_for_commands() -> Result<DbPool> {
+        let conn = rusqlite::Connection::open_in_memory()?;
+        db::schema::create_tables(&conn)?; // Make sure create_tables is accessible
+        Ok(Arc::new(Mutex::new(conn)))
+    }
+
+    #[tokio::test]
+    async fn test_generate_single_envelope_report_field_data_shared() -> Result<()> {
+        init_test_tracing();
+        tracing::info!("--- Running test_generate_single_envelope_report_field_data_shared ---");
+
+        let db_pool = setup_test_db_for_commands().await?;
+        let app_config = Arc::new(AppConfig {
+            envelopes_from_toml: vec![],
+            user_id_1: "user1_test_id".to_string(), // From .env for AppConfig
+            user_id_2: "user2_test_id".to_string(), // From .env for AppConfig
+            user_nickname_1: "UserOneTest".to_string(),
+            user_nickname_2: "UserTwoTest".to_string(),
+            database_path: String::new(), // Not directly used by the function under test
+        });
+
+        // Envelope properties for the test
+        let envelope_name = "Groceries";
+        let envelope_category = "Necessary";
+        let envelope_allocation = 500.0;
+        let envelope_balance = 450.0; // Initial balance for testing logic
+        let envelope_is_individual = false;
+        let envelope_user_id: Option<String> = None;
+        let envelope_rollover = false;
+        let envelope_is_deleted = false;
+
+        let db_generated_envelope_id;
+
+        // Insert the envelope and get its DB-generated ID
+        {
+            let conn = db_pool.lock().unwrap();
+            let mut stmt_env_insert = conn.prepare_cached(
+                "INSERT INTO envelopes (name, category, allocation, balance, is_individual, user_id, rollover, is_deleted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+            )?;
+            db_generated_envelope_id = stmt_env_insert.insert(params![
+                envelope_name,
+                envelope_category,
+                envelope_allocation,
+                envelope_balance,
+                envelope_is_individual,
+                envelope_user_id, // Option<String> is fine here with rusqlite
+                envelope_rollover,
+                envelope_is_deleted
+            ])?;
+            tracing::debug!(
+                "Inserted test envelope '{}', ID from DB: {}",
+                envelope_name,
+                db_generated_envelope_id
+            );
+        }
+
+        // Construct the Envelope struct with the DB-generated ID to pass to the function
+        let test_envelope = Envelope {
+            id: db_generated_envelope_id,
+            name: envelope_name.to_string(),
+            category: envelope_category.to_string(),
+            allocation: envelope_allocation,
+            balance: envelope_balance,
+            is_individual: envelope_is_individual,
+            user_id: envelope_user_id,
+            rollover: envelope_rollover,
+            is_deleted: envelope_is_deleted,
+        };
+
+        // Fixed date parameters for consistent testing
+        let year_for_test = 2025;
+        let month_for_test = 5; // May
+        let day_for_test = 15.0; // 15th day
+        let days_in_may_2025 = 31.0; // May has 31 days
+        tracing::debug!(
+            year_for_test,
+            month_for_test,
+            day_for_test,
+            days_in_may_2025,
+            "Date parameters for test"
+        );
+
+        // Insert a transaction for "actual spending" using the DB-generated envelope ID
+        let transaction_ts: DateTime<Utc> = Utc
+            .with_ymd_and_hms(year_for_test, month_for_test, 10, 12, 0, 0)
+            .unwrap();
+        {
+            let conn = db_pool.lock().unwrap();
+            let mut stmt_tx = conn.prepare(
+                "INSERT INTO transactions (envelope_id, amount, description, user_id, transaction_type, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+            )?;
+            stmt_tx.execute(params![
+                db_generated_envelope_id, // Use the ID from the database insert
+                50.0,
+                "test spend",
+                "test_user_ spender", // A distinct user ID for the transaction
+                "spend",
+                transaction_ts
+            ])?;
+            tracing::debug!(
+                "Inserted test transaction for envelope_id: {}",
+                db_generated_envelope_id
+            );
+        }
+
+        // Call the function under test
+        let (field_name, field_value) = generate_single_envelope_report_field_data(
+            &test_envelope,
+            &app_config,
+            &db_pool,
+            day_for_test,
+            days_in_may_2025,
+            year_for_test,
+            month_for_test,
+        )
+        .await?;
+
+        eprintln!(
+            "Asserting Field Name: Expected 'Groceries (Shared)', Got: '{}'",
+            field_name
+        );
+        eprintln!(
+            "Asserting Field Value:\nExpected Contains:\nBalance: $450.00 / Alloc: $500.00\nSpent (Actual): $50.00\nExpected Pace: $241.94\nStatus: 🟢\nActual Field Value:\n{}",
+            field_value
+        );
+
+        assert_eq!(field_name, "Groceries (Shared)");
+
+        // Check for key components in the field value
+        assert!(
+            field_value.contains("Balance: $450.00 / Alloc: $500.00"),
+            "Checking Balance/Alloc. Actual: {}",
+            field_value
+        );
+        assert!(
+            field_value.contains("Spent (Actual): $50.00"),
+            "Checking Spent (Actual). Actual: {}",
+            field_value
+        );
+        // Calculation for expected pace: (500.0 / 31.0) * 15.0 = 241.93548...
+        assert!(
+            field_value.contains("Expected Pace: $241.94"),
+            "Checking Expected Pace. Actual: {}",
+            field_value
+        );
+        assert!(
+            field_value.contains("Status: 🟢"),
+            "Checking Status Emoji. Actual: {}",
+            field_value
+        );
+
+        Ok(())
+    }
+
+    // Add more tests for individual envelopes, different spending scenarios for the emoji, etc.
+}
