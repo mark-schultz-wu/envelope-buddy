@@ -2,6 +2,7 @@
 use crate::db::{DbPool, schema};
 use crate::errors::{Error, Result};
 use crate::models::Envelope;
+use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use rusqlite::{OptionalExtension, params};
 use std::sync::Arc;
@@ -82,6 +83,38 @@ pub(crate) fn get_envelope_by_id_for_test(conn: &Connection, id: i64) -> Result<
             user_id: row.get(6)?,
             rollover: row.get(7)?,
             is_deleted: row.get(8)?,
+        })
+    })
+    .optional()
+    .map_err(Error::from)
+}
+
+#[derive(Debug)]
+pub(crate) struct TestTransaction {
+    #[allow(dead_code)]
+    pub(crate) id: i64,
+    pub(crate) amount: f64,
+    pub(crate) description: String,
+    pub(crate) transaction_type: String,
+    pub(crate) user_id: String,
+    pub(crate) timestamp: DateTime<Utc>,
+}
+
+pub(crate) fn get_transaction_by_id_for_test(
+    conn: &Connection,
+    tx_id: i64,
+) -> Result<Option<TestTransaction>> {
+    let mut stmt = conn.prepare_cached(
+            "SELECT id, amount, description, transaction_type, user_id, timestamp FROM transactions WHERE id = ?1"
+        )?;
+    stmt.query_row(params![tx_id], |row| {
+        Ok(TestTransaction {
+            id: row.get(0)?,
+            amount: row.get(1)?,
+            description: row.get(2)?,
+            transaction_type: row.get(3)?,
+            user_id: row.get(4)?,
+            timestamp: row.get(5)?,
         })
     })
     .optional()
