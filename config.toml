@@ -1,6 +1,3 @@
-# EnvelopeBuddy Configuration
-
-# Initial envelope definitions
 [[envelopes]]
 name = "groceries"
 category = "necessary"
@@ -20,16 +17,8 @@ name = "hobby"
 category = "quality_of_life"
 allocation = 100.0
 is_individual = true
-# For Option A individual envelopes, user_id here might be a placeholder
-# or used to designate one of the couple's IDs if the loading logic handles it,
-# but the bot logic will create two instances internally based on .env user IDs.
-# For simplicity in config, you might omit user_id here if `is_individual = true`
-# always implies it's for both configured users.
-# user_id = "USER1_PLACEHOLDER" # Or omit if is_individual implies for both
 rollover = true
 
-# Example of an individual envelope that might be for a specific user,
-# but will be created for BOTH users as per "Option A"
 [[envelopes]]
 name = "personal-fun-money"
 category = "quality_of_life"

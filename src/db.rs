@@ -1,7 +1,10 @@
+use crate::config::AppConfig;
 use crate::errors::{Error, Result};
-use rusqlite::Connection; // Using a direct connection for simplicity, consider r2d2 for pooling with Serenity if needed
-use std::sync::{Arc, Mutex}; // For sharing connection across async tasks safely if not using a pool
-use tracing::{debug, info, instrument};
+use crate::models::Envelope;
+use rusqlite::Error as RusqliteError;
+use rusqlite::{Connection, OptionalExtension, params};
+use std::sync::{Arc, Mutex};
+use tracing::{debug, info, instrument, warn};
 
 // A simple wrapper for now. For a production bot with Serenity,
 // you might want to use a connection pool like `r2d2_sqlite` or `sqlx`.
@@ -80,6 +83,137 @@ fn create_tables(conn: &Connection) -> Result<()> {
     .map_err(|e| Error::Database(format!("Failed to create tables: {}", e)))?;
     info!("Database tables ensured.");
     Ok(())
+}
+
+#[instrument(skip(pool, arc_app_config))]
+pub async fn seed_initial_envelopes(pool: &DbPool, arc_app_config: &Arc<AppConfig>) -> Result<()> {
+    let envelope_configs = &arc_app_config.envelopes_from_toml;
+    let user_id_1 = &arc_app_config.user_id_1;
+    let user_id_2 = &arc_app_config.user_id_2;
+    info!(
+        "Starting to seed initial envelopes. Found {} configurations.",
+        envelope_configs.len()
+    );
+    let mut conn = pool
+        .lock()
+        .map_err(|_| Error::Database("Failed to acquire DB lock for seeding".to_string()))?;
+
+    // Start a transaction
+    let tx = conn
+        .transaction()
+        .map_err(|e| Error::Database(format!("Failed to start transaction: {}", e)))?;
+
+    for cfg_envelope in envelope_configs {
+        debug!(
+            "Processing config for envelope: '{}', individual: {}",
+            cfg_envelope.name, cfg_envelope.is_individual
+        );
+        if cfg_envelope.is_individual {
+            let user_ids_to_process = [user_id_1, user_id_2];
+            for &current_user_id in user_ids_to_process.iter() {
+                // Check if this specific user's individual envelope already exists
+                let mut stmt_check = tx.prepare_cached(
+                    "SELECT id FROM envelopes WHERE name = ?1 AND user_id = ?2 AND is_deleted = FALSE",
+                )?;
+                let exists: Option<i64> = stmt_check
+                    .query_row(params![cfg_envelope.name, current_user_id], |row| {
+                        row.get(0)
+                    })
+                    .optional()?; // Allows for no rows found without erroring
+
+                if exists.is_none() {
+                    info!(
+                        "Inserting individual envelope '{}' for user {}",
+                        cfg_envelope.name, current_user_id
+                    );
+                    let mut stmt_insert = tx.prepare_cached(
+                        "INSERT INTO envelopes (name, category, allocation, balance, is_individual, user_id, rollover, is_deleted)
+                         VALUES (?1, ?2, ?3, ?4, TRUE, ?5, ?6, FALSE)",
+                    )?;
+                    stmt_insert.execute(params![
+                        cfg_envelope.name,
+                        cfg_envelope.category,
+                        cfg_envelope.allocation,
+                        cfg_envelope.allocation, // Initial balance is the allocation amount
+                        current_user_id,
+                        cfg_envelope.rollover,
+                    ])?;
+                } else {
+                    warn!(
+                        "Individual envelope '{}' for user {} already exists. Skipping.",
+                        cfg_envelope.name, current_user_id
+                    );
+                }
+            }
+        } else {
+            // Shared envelope
+            // Check if this shared envelope already exists
+            let mut stmt_check = tx.prepare_cached(
+                "SELECT id FROM envelopes WHERE name = ?1 AND user_id IS NULL AND is_deleted = FALSE",
+            )?;
+            let exists: Option<i64> = stmt_check
+                .query_row(params![cfg_envelope.name], |row| row.get(0))
+                .optional()?;
+
+            if exists.is_none() {
+                info!("Inserting shared envelope '{}'", cfg_envelope.name);
+                let mut stmt_insert = tx.prepare_cached(
+                    "INSERT INTO envelopes (name, category, allocation, balance, is_individual, user_id, rollover, is_deleted)
+                     VALUES (?1, ?2, ?3, ?4, FALSE, NULL, ?5, FALSE)",
+                )?;
+                stmt_insert.execute(params![
+                    cfg_envelope.name,
+                    cfg_envelope.category,
+                    cfg_envelope.allocation,
+                    cfg_envelope.allocation, // Initial balance is the allocation amount
+                    cfg_envelope.rollover,
+                ])?;
+            } else {
+                warn!(
+                    "Shared envelope '{}' already exists. Skipping.",
+                    cfg_envelope.name
+                );
+            }
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| Error::Database(format!("Failed to commit transaction: {}", e)))?;
+    info!("Finished seeding initial envelopes.");
+    Ok(())
+}
+
+#[instrument(skip(pool))]
+pub async fn get_all_active_envelopes(pool: &DbPool) -> Result<Vec<Envelope>> {
+    let conn = pool.lock().map_err(|_| {
+        Error::Database("Failed to acquire DB lock for getting envelopes".to_string())
+    })?;
+
+    let mut stmt = conn.prepare_cached("SELECT id, name, category, allocation, balance, is_individual, user_id, rollover, is_deleted FROM envelopes WHERE is_deleted = FALSE ORDER BY name, user_id")?;
+
+    let envelope_iter = stmt.query_map([], |row| {
+        Ok(Envelope {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            category: row.get(2)?,
+            allocation: row.get(3)?,
+            balance: row.get(4)?,
+            is_individual: row.get(5)?,
+            user_id: row.get(6)?,
+            rollover: row.get(7)?,
+            is_deleted: row.get(8)?,
+        })
+    })?;
+
+    let mut envelopes = Vec::new();
+    for envelope_result in envelope_iter {
+        envelopes.push(envelope_result.map_err(|e: RusqliteError| {
+            Error::Database(format!("Failed to map envelope row: {}", e))
+        })?);
+    }
+
+    debug!("Fetched {} active envelopes.", envelopes.len());
+    Ok(envelopes)
 }
 
 // You'll add functions here to interact with the database, e.g.:

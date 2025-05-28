@@ -2,7 +2,6 @@ use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::{commands, errors};
 use poise::serenity_prelude as serenity;
-use std::env;
 use std::sync::Arc;
 use tracing::{info, instrument};
 
@@ -37,25 +36,25 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
     }
 }
 
-#[instrument(skip(initial_app_config, db_pool))]
+#[instrument(skip(token, config, db_pool))]
 pub async fn run_bot(
-    initial_app_config: AppConfig,
+    token: String,
+    config: Arc<AppConfig>,
     db_pool: DbPool,
 ) -> Result<(), serenity::Error> {
-    let token =
-        env::var("DISCORD_BOT_TOKEN").expect("Expected a DISCORD_BOT_TOKEN in the environment");
-    let app_config = Arc::new(initial_app_config);
-
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: vec![
                 commands::ping(),
+                commands::report(),
                 // Add more commands here
             ],
             on_error: |error| Box::pin(on_error(error)),
             ..Default::default()
         })
-        .setup(|ctx, ready, framework| {
+        .setup(move |ctx, ready, framework| {
+            let config_clone_for_data = Arc::clone(&config); // Use the passed-in config
+            let db_pool_clone_for_data = db_pool.clone();
             Box::pin(async move {
                 info!("Logged in as {}", ready.user.name);
                 info!("Registering commands globally...");
@@ -69,8 +68,8 @@ pub async fn run_bot(
                 //     }
                 // }
                 Ok(Data {
-                    app_config: Arc::clone(&app_config),
-                    db_pool,
+                    app_config: config_clone_for_data,
+                    db_pool: db_pool_clone_for_data,
                 })
             })
         })
