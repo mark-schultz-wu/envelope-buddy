@@ -1,7 +1,8 @@
 pub mod connection;
 pub mod envelopes;
-pub mod schema;
+pub(crate) mod schema;
 pub mod system_state;
+pub(crate) mod test_utils;
 pub mod transactions;
 
 pub use connection::{DbPool, init_db};

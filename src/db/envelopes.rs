@@ -509,11 +509,6 @@ fn manage_envelope_instance_in_transaction(
             args.user_id, // This will be None for shared, Some(id) for individual
             rollover,
         ])?;
-        // In manage_envelope_instance_in_transaction, for INSERT NEW path:
-        let user_display = args.user_id.map_or("Shared", |uid| uid); // Simplifies for shared, but doesn't show Some("...") for individual
-        // For consistency with how Some("...") is displayed by `{:?}` on Option:
-        let user_display_debug = format!("{:?}", args.user_id); // This will be "None" or "Some(\"user_id\")"
-        // The tests were using `args.user_id.unwrap_or("Shared")` in the "ACTIVE" message, let's try to be consistent.
 
         // Path for "Created new":
         let user_desc = args.user_id.unwrap_or("Shared"); // This makes sense.
@@ -604,90 +599,13 @@ pub async fn create_or_reenable_envelope_flexible(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::EnvelopeConfig;
+    use crate::{config::EnvelopeConfig, db::test_utils::DirectInsertArgs};
     // Import items from the parent module (envelopes.rs)
-    use crate::db::schema; // If you need to call create_tables directly
-    use rusqlite::Connection; // For in-memory specific setup if not using full init_db
-    use std::sync::{Arc, Mutex};
-    use tracing_subscriber::EnvFilter;
+    use std::sync::Arc;
 
-    fn init_test_tracing() {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("trace")), // Default to TRACE for tests if RUST_LOG is not set
-            )
-            .with_test_writer() // Crucial for `cargo test` output
-            .try_init(); // Use try_init to avoid panic if already initialized
-    }
-
-    // Helper to create an in-memory DbPool for testing
-    // This helper should set up the schema as well.
-    async fn setup_test_db() -> Result<DbPool> {
-        // Using :memory: for a fresh, temporary database for each test run (or test module)
-        // init_db already creates tables.
-        // If init_db requires a path, we can use a unique name or handle in-memory setup differently
-        // For simplicity, if init_db can handle ":memory:":
-        // let pool = init_db(":memory:").await?;
-
-        // Or, more directly for tests if init_db is complex:
-        let conn = Connection::open_in_memory()
-            .map_err(|e| Error::Database(format!("Test DB: Failed to open in-memory: {}", e)))?;
-        schema::create_tables(&conn)?; // Make sure create_tables is accessible
-        Ok(Arc::new(Mutex::new(conn)))
-    }
-
-    // Helper to quickly insert a test envelope for setup (not using seed_initial_envelopes for focused tests)
-    // This is a simplified insert, real seeding has more logic.
-    fn direct_insert_envelope(
-        conn: &Connection,
-        name: &str,
-        category: &str,
-        allocation: f64,
-        balance: f64,
-        is_individual: bool,
-        user_id: Option<&str>,
-        rollover: bool,
-        is_deleted: bool,
-    ) -> Result<i64> {
-        let mut stmt = conn.prepare_cached(
-            "INSERT INTO envelopes (name, category, allocation, balance, is_individual, user_id, rollover, is_deleted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        )?;
-        let id = stmt.insert(params![
-            name,
-            category,
-            allocation,
-            balance,
-            is_individual,
-            user_id,
-            rollover,
-            is_deleted
-        ])?;
-        Ok(id)
-    }
-
-    // Helper to fetch any envelope by ID, including deleted ones, for test verification
-    fn get_envelope_by_id_for_test(conn: &Connection, id: i64) -> Result<Option<Envelope>> {
-        let mut stmt = conn.prepare_cached(
-             "SELECT id, name, category, allocation, balance, is_individual, user_id, rollover, is_deleted
-              FROM envelopes WHERE id = ?1",
-        )?;
-        stmt.query_row(params![id], |row| {
-            Ok(Envelope {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                category: row.get(2)?,
-                allocation: row.get(3)?,
-                balance: row.get(4)?,
-                is_individual: row.get(5)?,
-                user_id: row.get(6)?,
-                rollover: row.get(7)?,
-                is_deleted: row.get(8)?,
-            })
-        })
-        .optional()
-        .map_err(Error::from)
-    }
+    use crate::db::test_utils::{
+        direct_insert_envelope, get_envelope_by_id_for_test, init_test_tracing, setup_test_db,
+    };
 
     #[tokio::test]
     async fn test_seed_envelopes_and_get_all_active() -> Result<()> {
@@ -813,17 +731,18 @@ mod tests {
         let env_id;
         {
             let conn = db_pool.lock().unwrap();
-            env_id = direct_insert_envelope(
-                &conn,
-                "SharedToDelete",
-                "cat",
-                100.0,
-                100.0,
-                false,
-                None,
-                false,
-                false,
-            )?;
+            let args: DirectInsertArgs = DirectInsertArgs {
+                conn: &conn,
+                name: "SharedToDelete",
+                category: "cat",
+                allocation: 100.0,
+                balance: 100.0,
+                is_individual: false,
+                user_id: None,
+                rollover: false,
+                is_deleted: false,
+            };
+            env_id = direct_insert_envelope(&args)?;
         }
 
         let deleted = soft_delete_envelope(&db_pool, "SharedToDelete", "any_user_id").await?;
@@ -863,17 +782,18 @@ mod tests {
         let env_id;
         {
             let conn = db_pool.lock().unwrap();
-            env_id = direct_insert_envelope(
-                &conn,
-                "IndieToDelete",
-                "cat",
-                100.0,
-                100.0,
-                true,
-                Some(user1),
-                false,
-                false,
-            )?;
+            let args: DirectInsertArgs = DirectInsertArgs {
+                conn: &conn,
+                name: "IndieToDelete",
+                category: "cat",
+                allocation: 100.0,
+                balance: 100.0,
+                is_individual: true,
+                user_id: Some(user1),
+                rollover: false,
+                is_deleted: false,
+            };
+            env_id = direct_insert_envelope(&args)?;
         }
 
         let deleted = soft_delete_envelope(&db_pool, "IndieToDelete", user1).await?;
@@ -904,17 +824,18 @@ mod tests {
         let other_user = "other_user_id";
         {
             let conn = db_pool.lock().unwrap();
-            direct_insert_envelope(
-                &conn,
-                "IndieProtected",
-                "cat",
-                100.0,
-                100.0,
-                true,
-                Some(owner_user),
-                false,
-                false,
-            )?;
+            let args: DirectInsertArgs = DirectInsertArgs {
+                conn: &conn,
+                name: "IndieProtected",
+                category: "cat",
+                allocation: 100.0,
+                balance: 100.0,
+                is_individual: true,
+                user_id: Some(owner_user),
+                rollover: false,
+                is_deleted: false,
+            };
+            direct_insert_envelope(&args)?;
         }
 
         // Other user tries to delete
@@ -1038,17 +959,18 @@ mod tests {
         let env_id;
         {
             let conn = db_pool.lock().unwrap();
-            env_id = direct_insert_envelope(
-                &conn,
-                env_name,
-                original_cat,
-                original_alloc,
-                50.0,
-                false,
-                None,
-                original_rollover,
-                true,
-            )?;
+            let args: DirectInsertArgs = DirectInsertArgs {
+                conn: &conn,
+                name: env_name,
+                category: original_cat,
+                allocation: original_alloc,
+                balance: 50.0,
+                is_individual: false,
+                user_id: None,
+                rollover: original_rollover,
+                is_deleted: true,
+            };
+            env_id = direct_insert_envelope(&args)?;
         }
 
         // 2. Attempt to "create" (re-enable) with only name and type
@@ -1098,29 +1020,25 @@ mod tests {
         let env_id_user1;
         {
             let conn = db_pool.lock().unwrap();
-            env_id_user1 = direct_insert_envelope(
-                &conn,
-                env_name,
-                "old_cat_i",
-                100.0,
-                20.0,
-                true,
-                Some(user1),
-                false,
-                true,
-            )?;
+            let args: DirectInsertArgs = DirectInsertArgs {
+                conn: &conn,
+                name: env_name,
+                category: "old_cat_i",
+                allocation: 100.0,
+                balance: 20.0,
+                is_individual: true,
+                user_id: Some(user1),
+                rollover: false,
+                is_deleted: true,
+            };
+            env_id_user1 = direct_insert_envelope(&args)?;
             // Also insert for user2 so the re-enable logic finds something for user2 as well
-            direct_insert_envelope(
-                &conn,
-                env_name,
-                "old_cat_i",
-                100.0,
-                30.0,
-                true,
-                Some(user2),
-                false,
-                true,
-            )?;
+            let args2: DirectInsertArgs = DirectInsertArgs {
+                balance: 30.0,
+                user_id: Some(user2),
+                ..args
+            };
+            direct_insert_envelope(&args2)?;
         }
 
         // 2. Attempt to "create" (re-enable) with name, type, and new allocation/category
@@ -1177,9 +1095,18 @@ mod tests {
         let env_name = "ActiveExists";
         {
             let conn = db_pool.lock().unwrap();
-            direct_insert_envelope(
-                &conn, env_name, "cat", 100.0, 100.0, false, None, false, false,
-            )?;
+            let args: DirectInsertArgs = DirectInsertArgs {
+                conn: &conn,
+                name: env_name,
+                category: "cat",
+                allocation: 100.0,
+                balance: 100.0,
+                is_individual: false,
+                user_id: None,
+                rollover: false,
+                is_deleted: false,
+            };
+            direct_insert_envelope(&args)?;
         }
 
         let args = CreateUpdateEnvelopeArgs {
@@ -1213,31 +1140,36 @@ mod tests {
         // 3. User1's individual envelope "Common" (to test priority)
         {
             let conn = db_pool.lock().unwrap();
-            direct_insert_envelope(
-                &conn, "Common", "shared", 100.0, 100.0, false, None, false, false,
-            )?;
-            direct_insert_envelope(
-                &conn,
-                "Personal",
-                "indie_u1",
-                50.0,
-                50.0,
-                true,
-                Some(user1),
-                false,
-                false,
-            )?;
-            direct_insert_envelope(
-                &conn,
-                "Common",
-                "indie_u1_common",
-                75.0,
-                75.0,
-                true,
-                Some(user1),
-                false,
-                false,
-            )?;
+            let args: DirectInsertArgs = DirectInsertArgs {
+                conn: &conn,
+                name: "Common",
+                category: "shared",
+                allocation: 100.0,
+                balance: 100.0,
+                is_individual: false,
+                user_id: None,
+                rollover: false,
+                is_deleted: false,
+            };
+            direct_insert_envelope(&args)?;
+            let args2 = DirectInsertArgs {
+                name: "Personal",
+                category: "indie_u1",
+                allocation: 50.0,
+                balance: 50.0,
+                is_individual: true,
+                user_id: Some(user1),
+                ..args
+            };
+            direct_insert_envelope(&args2)?;
+            let args3 = DirectInsertArgs {
+                name: "Common",
+                category: "indie_u1_common",
+                allocation: 75.0,
+                balance: 75.0,
+                ..args2
+            };
+            direct_insert_envelope(&args3)?;
         }
 
         // Test Case 1: User1 asks for "Common" -> should get their individual "Common"
