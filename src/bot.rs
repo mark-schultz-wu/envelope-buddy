@@ -53,7 +53,7 @@ pub async fn run_bot(
                 commands::update(),
                 commands::delete_envelope(),
                 commands::create_envelope(),
-                commands::testautocomplete(),
+                commands::product::product(),
             ],
             on_error: |error| Box::pin(on_error(error)),
             ..Default::default()

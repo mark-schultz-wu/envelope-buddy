@@ -246,6 +246,34 @@ pub async fn get_user_or_shared_envelope(
 }
 
 #[instrument(skip(pool))]
+pub async fn get_envelope_by_id(pool: &DbPool, envelope_id: i64) -> Result<Option<Envelope>> {
+    let conn = pool.lock().map_err(|_| {
+        Error::Database("Failed to acquire DB lock for get_envelope_by_id".to_string())
+    })?;
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, name, category, allocation, balance, is_individual, user_id, rollover, is_deleted
+         FROM envelopes WHERE id = ?1 AND is_deleted = FALSE", // Only fetch active envelopes
+    )?;
+    let envelope_result = stmt
+        .query_row(params![envelope_id], |row| {
+            Ok(Envelope {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                category: row.get(2)?,
+                allocation: row.get(3)?,
+                balance: row.get(4)?,
+                is_individual: row.get(5)?,
+                user_id: row.get(6)?,
+                rollover: row.get(7)?,
+                is_deleted: row.get(8)?,
+            })
+        })
+        .optional()?; // Handles case where no envelope with this ID is found or if it's deleted
+
+    Ok(envelope_result)
+}
+
+#[instrument(skip(pool))]
 pub async fn update_envelope_balance(
     pool: &DbPool,
     envelope_id: i64,

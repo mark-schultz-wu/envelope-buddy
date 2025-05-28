@@ -1,9 +1,11 @@
-use crate::bot::Error;
+use crate::bot::{Context, Error};
 use crate::config::AppConfig;
 use crate::db::{self, DbPool};
 use crate::models::Envelope;
 use chrono::{Datelike, Local, NaiveDate};
+use poise::serenity_prelude::AutocompleteChoice;
 use std::sync::Arc;
+use tracing::{error, trace};
 
 // Helper function to get current date info
 pub(crate) fn get_current_month_date_info() -> (NaiveDate, f64, f64, i32, u32) {
@@ -82,6 +84,40 @@ pub(crate) async fn generate_single_envelope_report_field_data(
         status_emoji
     );
     Ok((field_name, field_value))
+}
+
+pub(crate) async fn envelope_name_autocomplete(
+    ctx: Context<'_>,
+    partial: &str,
+) -> Vec<AutocompleteChoice> {
+    trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request received for envelope_name");
+
+    let data = ctx.data();
+    let db_pool = &data.db_pool;
+    let author_id_str = ctx.author().id.to_string();
+    trace!(author_id = %author_id_str, "Author ID for autocomplete query");
+
+    match db::suggest_accessible_envelope_names(db_pool, &author_id_str, partial).await {
+        Ok(names) => {
+            trace!(fetched_names = ?names, "Names fetched from DB for autocomplete");
+            let choices: Vec<AutocompleteChoice> = names
+                .into_iter()
+                .map(|name_str| {
+                    trace!(name = %name_str, value = %name_str, "Mapping to AutocompleteChoice");
+                    AutocompleteChoice::new(name_str.clone(), name_str)
+                })
+                .collect();
+            trace!(returned_choices = ?choices, "Returning choices for autocomplete");
+            choices
+        }
+        Err(e) => {
+            error!(
+                "Autocomplete: Failed to fetch envelope suggestions: {:?}",
+                e
+            );
+            Vec::new()
+        }
+    }
 }
 
 #[cfg(test)]

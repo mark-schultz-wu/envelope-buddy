@@ -30,6 +30,18 @@ pub struct Transaction {
     pub message_id: Option<String>, // TEXT (Discord Message ID for reference/editing)
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Product {
+    pub id: i64,
+    pub name: String,
+    pub price: f64,
+    pub envelope_id: i64,
+    pub description: Option<String>,
+    // This field is not in the DB table but can be populated by JOINs for display
+    #[serde(default)] // Handles cases where it might not be loaded from DB directly
+    pub envelope_name: Option<String>,
+}
+
 // Add other models like Product, Shortcut, SystemState as needed
 // Example for Product:
 // #[derive(Debug, Serialize, Deserialize)]

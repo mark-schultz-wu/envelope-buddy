@@ -1,5 +1,6 @@
 mod envelope;
 mod general;
+pub mod product;
 mod transaction;
 pub mod utils;
 
