@@ -1,4 +1,4 @@
-# EnvelopeBuddy Design Document (Updated)
+# EnvelopeBuddy 
 
 EnvelopeBuddy is a Discord bot designed to help a couple track shared and individual expenses using an envelope-style budgeting system. The bot utilizes slash commands, features detailed reporting, and includes mechanisms for quick expense logging. It focuses on maintaining current envelope balances and is intended to run on a Raspberry Pi.
 
