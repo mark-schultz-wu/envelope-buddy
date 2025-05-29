@@ -8,20 +8,20 @@ rollover = false
 [[envelopes]]
 name = "eating-out"
 category = "quality_of_life"
-allocation = 200.0
+allocation = 150.0
 is_individual = false
 rollover = false
 
 [[envelopes]]
-name = "hobby"
+name = "game"
 category = "quality_of_life"
-allocation = 100.0
+allocation = 80.0
 is_individual = true
 rollover = true
 
 [[envelopes]]
-name = "personal-fun-money"
+name = "drink"
 category = "quality_of_life"
-allocation = 75.0
+allocation = 60.0
 is_individual = true
-rollover = true
+rollover = false
