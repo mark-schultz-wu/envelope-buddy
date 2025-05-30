@@ -13,43 +13,53 @@ use tracing::{error, info, instrument, trace, warn};
 // Autocomplete function for existing product names
 async fn product_name_autocomplete(ctx: Context<'_>, partial: &str) -> Vec<AutocompleteChoice> {
     trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request for product_name");
-    let db_pool = &ctx.data().db_pool;
+    let _db_pool = &ctx.data().db_pool;
 
-    match db::suggest_product_names(db_pool, partial).await {
-        Ok(names) => names
-            .into_iter()
-            .map(|name_str| AutocompleteChoice::new(name_str.clone(), name_str))
-            .collect(),
-        Err(e) => {
-            error!(
-                "Autocomplete: Failed to fetch product name suggestions: {:?}",
-                e
-            );
-            Vec::new()
-        }
-    }
+    let data = ctx.data();
+    let product_names_cache_guard = data.product_names_cache.read().await;
+
+    let partial_lower = partial.to_lowercase();
+
+    let choices: Vec<AutocompleteChoice> = product_names_cache_guard
+        .iter()
+        .filter(|name| name.to_lowercase().contains(&partial_lower)) // Case-insensitive 'contains' search
+        .take(25) // Discord's limit for choices
+        .map(|name_str| AutocompleteChoice::new(name_str.clone(), name_str.clone())) // Name and value are the same
+        .collect();
+    trace!(
+        num_choices = choices.len(),
+        "Returning product choices from cache"
+    );
+    choices
 }
 
 /// Parent command for managing products. Use subcommands like add, list, update, use.
 #[poise::command(
     slash_command,
-    subcommands("product_add", "product_list", "product_update", "product_use")
+    subcommands(
+        "product_add",
+        "product_list",
+        "product_update",
+        "product_use",
+        "product_delete"
+    )
 )]
 pub async fn product(ctx: Context<'_>) -> Result<()> {
-    // This body is called if the user types just /product
-    // You can provide help text for the subcommands here.
     let help_text = "Product management command. Available subcommands:\n\
-                     `/product add name:<name> total_price:<price> envelope:<envelope_name> [quantity:<num>] [description:<text>]`\n\
-                    > Adds a new product. Unit price is calculated from total_price and quantity (defaults to 1).\n\
-                     `/product list` - View all defined products.\n\
-                     `/product update <name> <total_price> [quantity]` - Update a product's price.\n\
-                     `/product use <name> [quantity]` - Record an expense using a product.";
+        `/product add name:<name> total_price:<price> envelope:<envelope_name> [quantity:<num>] [description:<text>]`\n\
+        > Defines a new product. The unit price is calculated from `total_price` and `quantity` (quantity defaults to 1 if omitted).\n\
+        `/product list`\n\
+        > Displays all defined products, their prices, and linked envelopes.\n\
+        `/product update name:<name> total_price:<price> [quantity:<num>]`\n\
+        > Updates an existing product's unit price using the given `total_price` and `quantity` (quantity defaults to 1 if omitted).\n\
+        `/product consume name:<name> [quantity:<num>]`\n\
+        > Records an expense by consuming a specified quantity of a predefined product (quantity defaults to 1).";
     ctx.say(help_text).await?;
     Ok(())
 }
 
 /// Adds a new fixed-price product, calculating unit price from total price and quantity.
-#[poise::command(slash_command, rename = "product_add")]
+#[poise::command(slash_command, rename = "add")]
 #[instrument(skip(ctx))]
 pub async fn product_add(
     ctx: Context<'_>,
@@ -140,6 +150,14 @@ pub async fn product_add(
                 envelope_to_link.name,
                 envelope_to_link.id
             );
+            if let Err(e) =
+                crate::cache::refresh_product_names_cache(db_pool, &data.product_names_cache).await
+            {
+                error!(
+                    "Failed to refresh product names cache after adding product '{}': {}",
+                    name, e
+                );
+            }
             ctx.say(format!(
                 "✅ Product '{}' added with unit price **${:.2}**{} and linked to envelope '{}'.",
                 name, unit_price, price_calculation_note, envelope_to_link.name
@@ -485,6 +503,16 @@ pub async fn product_update(
             } else {
                 String::new() // No note if quantity was 1 or defaulted to 1
             };
+            // Don't strictly have to refresh the cache here as the name stays the same
+            if let Err(e) =
+                crate::cache::refresh_product_names_cache(db_pool, &ctx.data().product_names_cache)
+                    .await
+            {
+                error!(
+                    "Failed to refresh product names cache after updating product '{}': {}",
+                    name, e
+                );
+            }
 
             info!(
                 "Price updated for product '{}' (ID: {}) to ${:.2}{}",
@@ -516,6 +544,53 @@ pub async fn product_update(
         Err(e) => {
             error!("Failed to update price for product '{}': {:?}", name, e);
             ctx.say(format!("❌ Failed to update price for product '{}'.", name))
+                .await?;
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+#[poise::command(slash_command, rename = "delete")]
+#[instrument(skip(ctx))]
+pub async fn product_delete(
+    ctx: Context<'_>,
+    #[description = "Name of the product to delete"]
+    #[autocomplete = "product_name_autocomplete"] // Use autocomplete to find the product
+    name: String,
+) -> Result<()> {
+    info!(
+        "Product_delete command from {}: product_name='{}'",
+        ctx.author().name,
+        name
+    );
+    let data = ctx.data();
+    let db_pool = &data.db_pool;
+
+    match db::delete_product_by_name(db_pool, &name).await {
+        Ok(rows_affected) if rows_affected > 0 => {
+            info!("Successfully deleted product '{}'", name);
+
+            if let Err(e) =
+                crate::cache::refresh_product_names_cache(db_pool, &data.product_names_cache).await
+            {
+                error!(
+                    "Failed to refresh product names cache after deleting product '{}': {}",
+                    name, e
+                );
+            }
+
+            ctx.say(format!("✅ Product '{}' has been deleted.", name))
+                .await?;
+        }
+        Ok(_) => {
+            // 0 rows affected means product wasn't found
+            ctx.say(format!("Product '{}' not found. Nothing to delete.", name))
+                .await?;
+        }
+        Err(e) => {
+            error!("Failed to delete product '{}': {:?}", name, e);
+            ctx.say(format!("❌ Failed to delete product '{}'.", name))
                 .await?;
             return Err(e);
         }

@@ -1,9 +1,10 @@
-use crate::commands;
 use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::errors;
+use crate::{commands, models::CachedEnvelopeInfo};
 use poise::serenity_prelude as serenity;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{error, info, instrument, warn};
 
 // User data, which is stored and accessible in all command invocations
@@ -12,6 +13,8 @@ use tracing::{error, info, instrument, warn};
 pub struct Data {
     pub app_config: Arc<AppConfig>,
     pub db_pool: DbPool,
+    pub envelope_names_cache: Arc<RwLock<Vec<CachedEnvelopeInfo>>>,
+    pub product_names_cache: Arc<RwLock<Vec<String>>>,
 }
 
 // Type alias for the error type Poise will use
@@ -123,10 +126,32 @@ pub async fn run_bot(
                         Err(e) => error!("Failed to register commands globally: {:?}", e),
                     }
                 }
-                Ok(Data {
+                // --- INITIALIZE AND POPULATE CACHES ---
+                let data_instance = Data {
                     app_config: config_clone_for_data,
                     db_pool: db_pool_clone_for_data,
-                })
+                    envelope_names_cache: Arc::new(RwLock::new(Vec::new())),
+                    product_names_cache: Arc::new(RwLock::new(Vec::new())),
+                };
+
+                // Populate initial caches (calls functions from crate::cache)
+                if let Err(e) = crate::cache::refresh_envelope_names_cache(
+                    &data_instance.db_pool,
+                    &data_instance.envelope_names_cache,
+                )
+                .await
+                {
+                    error!("Failed to initialize envelope names cache: {}", e);
+                }
+                if let Err(e) = crate::cache::refresh_product_names_cache(
+                    &data_instance.db_pool,
+                    &data_instance.product_names_cache,
+                )
+                .await
+                {
+                    error!("Failed to initialize product names cache: {}", e);
+                }
+                Ok(data_instance)
             })
         })
         .build();

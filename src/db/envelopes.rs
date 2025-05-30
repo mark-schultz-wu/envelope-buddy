@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::errors::{Error, Result};
-use crate::models::Envelope;
+use crate::models::{CachedEnvelopeInfo, Envelope};
 use rusqlite::Error as RusqliteError;
 use rusqlite::{OptionalExtension, params};
 use std::sync::Arc;
@@ -612,8 +612,8 @@ pub async fn create_or_reenable_envelope_flexible(
             name,
             category,
             allocation,
-            is_individual: Some(false), // This instance IS shared
-            user_id: None,              // No user_id for shared
+            is_individual: Some(false),
+            user_id: None,
             rollover,
         };
         results.push(manage_envelope_instance_in_transaction(&tx, &shared_args)?);
@@ -622,6 +622,30 @@ pub async fn create_or_reenable_envelope_flexible(
     tx.commit()
         .map_err(|e| Error::Database(format!("Failed to commit transaction: {}", e)))?;
     Ok(results)
+}
+
+#[instrument(skip(pool))]
+pub async fn get_all_unique_active_envelope_names(
+    pool: &DbPool,
+) -> Result<Vec<CachedEnvelopeInfo>> {
+    let conn = pool
+        .lock()
+        .map_err(|_| Error::Database("Failed to acquire DB lock".to_string()))?;
+    let mut stmt = conn.prepare_cached(
+        "SELECT name, user_id FROM envelopes WHERE is_deleted = FALSE ORDER BY name ASC, user_id ASC",
+    )?;
+    let envelopes_iter = stmt.query_map([], |row| {
+        Ok(CachedEnvelopeInfo {
+            name: row.get(0)?,
+            user_id: row.get(1)?,
+        })
+    })?;
+    let mut infos = Vec::new();
+    for info_result in envelopes_iter {
+        infos.push(info_result?);
+    }
+    debug!("Fetched {} active envelope infos for cache.", infos.len());
+    Ok(infos)
 }
 
 #[instrument(skip(pool))]
@@ -1289,6 +1313,14 @@ mod tests {
         let env4 = get_user_or_shared_envelope(&db_pool, "DoesNotExist", user1).await?;
         assert!(env4.is_none());
 
+        Ok(())
+    }
+    #[tokio::test]
+    async fn test_get_all_unique_active_envelope_names_empty() -> Result<()> {
+        init_test_tracing();
+        let pool = setup_test_db().await?;
+        let names = get_all_unique_active_envelope_names(&pool).await?;
+        assert!(names.is_empty(), "Should return empty vec for no envelopes");
         Ok(())
     }
 }

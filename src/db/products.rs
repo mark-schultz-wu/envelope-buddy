@@ -159,6 +159,28 @@ pub async fn delete_product_by_name(pool: &DbPool, name: &str) -> Result<usize> 
 }
 
 #[instrument(skip(pool))]
+pub async fn get_all_product_names(pool: &DbPool) -> Result<Vec<String>> {
+    let conn = pool.lock().map_err(|_| {
+        Error::Database("Failed to acquire DB lock for fetching all product names".to_string())
+    })?;
+
+    let mut stmt = conn.prepare_cached("SELECT name FROM products ORDER BY name ASC")?; // Products already have a UNIQUE constraint on name
+
+    let names_iter = stmt.query_map([], |row| {
+        row.get(0) // Get the name string
+    })?;
+
+    let mut names = Vec::new();
+    for name_result in names_iter {
+        names.push(name_result.map_err(|e| {
+            Error::Database(format!("Failed to map product name row for cache: {}", e))
+        })?);
+    }
+    debug!("Fetched {} product names for cache.", names.len());
+    Ok(names)
+}
+
+#[instrument(skip(pool))]
 pub async fn suggest_product_names(pool: &DbPool, partial_name: &str) -> Result<Vec<String>> {
     let conn = pool
         .lock()
@@ -518,6 +540,54 @@ mod tests {
         let suggestions_empty_partial = suggest_product_names(&pool, "").await?;
         assert_eq!(suggestions_empty_partial.len(), 4); // All 4 products
 
+        Ok(())
+    }
+    #[tokio::test]
+    async fn test_get_all_product_names_for_cache_empty() -> Result<()> {
+        init_test_tracing();
+        let pool = setup_test_db().await?;
+        let names = get_all_product_names(&pool).await?;
+        assert!(names.is_empty(), "Should return empty vec for no products");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_all_product_names_for_cache_with_data() -> Result<()> {
+        init_test_tracing();
+        let pool = setup_test_db().await?;
+        let env_id;
+        {
+            let conn = pool.lock().unwrap();
+            // Assuming direct_insert_envelope is accessible and correctly defined.
+            // You might need to adjust this if it's in a different module.
+            env_id = direct_insert_envelope(&DirectInsertArgs {
+                conn: &conn,
+                name: "DefaultEnv",
+                category: "cat",
+                allocation: 10.0,
+                balance: 10.0,
+                is_individual: false,
+                user_id: None,
+                rollover: false,
+                is_deleted: false,
+            })?;
+        }
+
+        add_product(&pool, "Milk", 2.99, env_id, None).await?;
+        add_product(&pool, "Bread", 3.50, env_id, None).await?;
+        add_product(&pool, "Apples", 4.00, env_id, None).await?;
+
+        let names = get_all_product_names(&pool).await?;
+        assert_eq!(names.len(), 3, "Should list 3 product names");
+        // Check order (ORDER BY name ASC in the query)
+        assert_eq!(
+            names,
+            vec![
+                "Apples".to_string(),
+                "Bread".to_string(),
+                "Milk".to_string()
+            ]
+        );
         Ok(())
     }
 }

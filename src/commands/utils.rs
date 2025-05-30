@@ -4,8 +4,9 @@ use crate::db::{self, DbPool};
 use crate::models::Envelope;
 use chrono::{Datelike, Local, NaiveDate};
 use poise::serenity_prelude::AutocompleteChoice;
+use std::collections::BTreeSet;
 use std::sync::Arc;
-use tracing::{error, trace};
+use tracing::trace;
 
 // Helper function to get current date info
 pub(crate) fn get_current_month_date_info() -> (NaiveDate, f64, f64, i32, u32) {
@@ -90,34 +91,36 @@ pub(crate) async fn envelope_name_autocomplete(
     ctx: Context<'_>,
     partial: &str,
 ) -> Vec<AutocompleteChoice> {
-    trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request received for envelope_name");
+    trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request for envelope_name (from richer cache)");
 
     let data = ctx.data();
-    let db_pool = &data.db_pool;
+    let all_envelopes_cache_guard = data.envelope_names_cache.read().await; // This is Vec<CachedEnvelopeInfo>
     let author_id_str = ctx.author().id.to_string();
-    trace!(author_id = %author_id_str, "Author ID for autocomplete query");
+    let partial_lower = partial.to_lowercase();
 
-    match db::suggest_accessible_envelope_names(db_pool, &author_id_str, partial).await {
-        Ok(names) => {
-            trace!(fetched_names = ?names, "Names fetched from DB for autocomplete");
-            let choices: Vec<AutocompleteChoice> = names
-                .into_iter()
-                .map(|name_str| {
-                    trace!(name = %name_str, value = %name_str, "Mapping to AutocompleteChoice");
-                    AutocompleteChoice::new(name_str.clone(), name_str)
-                })
-                .collect();
-            trace!(returned_choices = ?choices, "Returning choices for autocomplete");
-            choices
-        }
-        Err(e) => {
-            error!(
-                "Autocomplete: Failed to fetch envelope suggestions: {:?}",
-                e
-            );
-            Vec::new()
+    // Use BTreeSet to collect unique names, it will keep them sorted alphabetically.
+    let mut matching_names_sorted: BTreeSet<String> = BTreeSet::new();
+
+    for cached_env in all_envelopes_cache_guard.iter() {
+        if cached_env.name.to_lowercase().contains(&partial_lower)
+            && (cached_env.user_id.is_none()
+                || cached_env.user_id.as_deref() == Some(&author_id_str))
+        {
+            matching_names_sorted.insert(cached_env.name.clone());
         }
     }
+
+    let choices: Vec<AutocompleteChoice> = matching_names_sorted
+        .into_iter() // Iterating BTreeSet yields items in sorted order
+        .take(25) // Take the top 25 after sorting by BTreeSet and filtering
+        .map(|name_str| AutocompleteChoice::new(name_str.clone(), name_str))
+        .collect();
+
+    trace!(
+        num_choices = choices.len(),
+        "Returning envelope choices from richer cache, sorted by BTreeSet"
+    );
+    choices
 }
 
 #[cfg(test)]
