@@ -1,53 +1,62 @@
-EnvelopeBuddy Design Document (Updated)
-EnvelopeBuddy is a Discord bot designed to help a couple track shared and individual expenses using an envelope-style budgeting system. The bot utilizes slash commands, features detailed reporting, and includes mechanisms for quick expense logging. It focuses on maintaining current envelope balances and is intended to run on a Raspberry Pi.
+# EnvelopeBuddy Design Document 
 
-1. Core Concepts
-1.1. Envelopes
+## 1. Introduction
 
-Types: Envelopes can be for short-term expenses (resetting monthly) or longer-term savings/spending (carrying over a balance).
-Categories: Each envelope is assigned a category, typically "necessary" (e.g., groceries) or "quality_of_life" (e.g., eating out), for classification and potential future reporting.
-Ownership: Envelopes can be shared between the couple or individual.
-Individual envelope "types" (e.g., "Hobby") are instantiated for both users, each with their own balance and allocation.
-Attributes: Each envelope has a monthly allocation amount and a current_balance.
-Rollover: A boolean flag indicates if the remaining balance should roll over to the next month or if the envelope should reset to its allocation.
-Soft Delete & Re-enable: Envelopes can be soft-deleted (marked inactive). Attempting to create an envelope with the same name (and user context for individual envelopes) as a soft-deleted one will re-enable it, optionally updating its attributes. The is_individual status of an envelope is fixed upon its initial creation and cannot be changed by re-enabling.
-1.2. Transactions
+EnvelopeBuddy is a Discord bot designed to help a couple track shared and individual expenses using an envelope-style budgeting system. The bot utilizes slash commands, features detailed reporting with progress indicators, and includes mechanisms for quick expense logging via predefined products. It focuses on maintaining current envelope balances, is built in Rust for performance and reliability, and is intended for self-hosting (e.g., on a Raspberry Pi). This document outlines its current features, planned enhancements, and development standards.
 
-Represent financial activities (spending, adding funds, product usage).
-Each transaction is linked to an envelope and records the amount, description, user who initiated it, timestamp, and type (e.g., "spend", "deposit").
-1.3. Products
+## 2. Core Concepts
 
-Fixed-price items that map to a specific pre-defined envelope instance.
-Users can define products with a name, unit price, and linked envelope.
-Using a product deducts its price (multiplied by quantity) from the linked envelope.
-1.4. Shortcuts
+### 2.1. Envelopes
+* **Definition:** Logical containers for budgeting specific categories of expenses.
+* **Types:** Envelopes can be for short-term expenses (potentially resetting monthly) or longer-term savings/spending (carrying over a balance).
+* **Categories:** Each envelope is assigned a category (e.g., "necessary", "quality\_of\_life") for classification, potential future reporting, and budgeting strategy.
+* **Ownership:** Envelopes can be **shared** between the two configured users or **individual**.
+    * Individual envelope "types" (e.g., an envelope named "Hobby") are instantiated for *both* configured users, each with their own separate balance and benefiting from the type's defined allocation.
+* **Attributes:** Each envelope instance has a monthly `allocation` amount and a `current_balance`.
+* **Rollover:** A boolean flag (`rollover`) indicates if the remaining balance should be added to the next month's allocation or if the envelope should reset to its base allocation amount.
+* **Soft Delete & Re-enable:** Envelopes can be soft-deleted (marked as `is_deleted = true`). Attempting to create an envelope via `/manage envelope create` with the same identifying characteristics (name for shared; name and user context for individual) as a soft-deleted one will re-enable it. When re-enabling, users can optionally provide new attributes (category, allocation, rollover); if not provided, old attributes are kept. The balance is reset to the effective (new or old) allocation upon re-enablement. The `is_individual` status of an envelope is fixed upon its initial creation and cannot be changed by re-enabling.
 
-(Implementation currently deferred. To be revisited if desired.)
-Original Concept: Command templates with parameters for variable-price items, allowing users to quickly execute pre-filled commands (primarily for spending) by providing a variable amount and an optional note.
-1.5. Splurge Mechanism (Future Plan)
+### 2.2. Transactions
+* Represent all financial activities affecting envelopes.
+* Each transaction is linked to a specific envelope instance.
+* Records the `amount` (always positive), `description`, the `user_id` of the person initiating the transaction, a `timestamp`, and a `transaction_type` (e.g., "spend", "deposit", "adjustment"). Future types include "splurge\_primary", "splurge\_fund", "subscription\_expense", "recurring\_income".
 
-Allows a single expense to be split between a primary target envelope and a dedicated "Splurge" envelope.
-The "Splurge" envelope is an individual type (one instance per user, or a shared couple's fund). Its funding is handled manually (e.g., via /addfunds or future custom allocation cycles), not via a standard monthly allocation.
-Users will specify the total expense and the amount to be covered by the "Splurge" envelope; the remainder comes from the primary envelope.
-This will likely be a subcommand or option on /spend.
-Transactions will ideally be recorded as a single logical event with multiple legs, or clearly linked.
-Mini-reports after a splurge will show the impact on both affected envelopes.
-1.6. Recurring Subscriptions (Future Plan)
+### 2.3. Products
+* Globally defined, fixed-price items that map to a specific "template" envelope instance (either a shared envelope or an individual envelope type name).
+* Users define products with a name, unit price (calculated from total price and optional quantity at creation/update), and the name of the envelope it's linked to.
+* When a product is "consumed" (used via `/product <product_name>`), an expense is recorded. If the product is linked to an individual envelope type, the expense is debited from the command issuer's specific instance of that individual envelope type. If linked to a shared envelope, the shared envelope is debited.
 
-Automated logging of recurring expenses (and potentially income).
-Users will define subscriptions (name, amount, envelope, frequency, day of processing).
-A scheduling mechanism (e.g., daily check) within the bot will process due subscriptions.
-If an envelope has insufficient funds, the transaction will still be logged (overdraft), and users will be notified/pinged.
-Successful processing will also trigger a notification.
-Management commands (/subscription add/list/delete/edit) will be needed.
-1.7. Savings Goals (Future Plan)
+### 2.4. Shortcuts (Implementation Currently Deferred)
+* User-defined aliases for frequently used variable-price spend operations.
+* A shortcut definition would store a name and a `command_template` string (e.g., `"spend CoffeeFund {} Morning coffee run"` where `{}` is a placeholder for the amount).
+* Using a shortcut would involve providing the shortcut name, an amount, and an optional note, which then get parsed from the template to execute a spend.
 
-Users can define a target amount for a specific (likely rollover) envelope.
-The bot can report progress and potentially notify when a goal is met, possibly integrated with the daily/update mechanism.
-2. Data Model
-2.1. envelopes
+### 2.5. Splurge Mechanism (Future Plan)
+* Allows a single expense to be split between a primary target envelope and a dedicated "Splurge" envelope.
+* **Splurge Envelope:** A dedicated envelope, treated as an individual type (one instance per configured user, or a shared "couple's fund"). Its funding is handled manually (e.g., via `/addfunds`) or via future custom allocation cycles (e.g., semi-yearly). Specific naming and setup TBD.
+* **Invocation:** User specifies the total expense and the amount to be covered by their "Splurge" envelope; the remainder comes from the primary envelope. Likely an option on `/spend` or a dedicated subcommand like `/manage spend splurge ...`.
+* **Transaction Recording:** Ideally recorded as a single logical event with multiple financial legs, or as clearly linked transactions.
+* **Feedback:** Mini-reports after a splurge spend will show the impact on *both* affected envelopes.
+* **Overdraft Handling:** To be determined if either leg can overdraft.
 
-SQL
+### 2.6. Recurring Transactions (Subscriptions & Income - Future Plan)
+* Automated logging for recurring expenses and income.
+* **Definition:** Users define items with name, amount, `transaction_type` ("expense" or "income"), target envelope, frequency (e.g., monthly, yearly, weekly), and processing day/date.
+* **Execution:** A daily scheduling mechanism within the bot will process due items.
+* **Failure Handling:** If an envelope has insufficient funds for an expense, the transaction will still be logged (creating an overdraft), and users will be pinged/notified.
+* **Notification:** Users will be notified when a recurring item is successfully processed.
+* **Management Commands:** Grouped under `/manage subscription ...` or `/manage income ...`.
+* **Open Questions:** Precise handling for variable month lengths (e.g., day 31 in February), exact frequency options.
+
+### 2.7. Savings Goals (Future Plan)
+* Users can define named goals with a target amount (and optional target date) linked to a specific (likely rollover) envelope.
+* Commands will be grouped under `/manage goal ...`.
+* The bot can report progress and will notify (e.g., via daily scheduler or during `/update`) when a goal is met.
+
+## 3. Data Model (SQLite)
+
+### 3.1. `envelopes`
+```sql
 CREATE TABLE IF NOT EXISTS envelopes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -67,9 +76,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_shared_envelope_name
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_individual_envelope_name_user
     ON envelopes(name, user_id)
     WHERE user_id IS NOT NULL;
-2.2. transactions
+```
 
-SQL
+### 3.2. `transactions`
+```sql
 CREATE TABLE IF NOT EXISTS transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     envelope_id INTEGER NOT NULL,
@@ -78,40 +88,42 @@ CREATE TABLE IF NOT EXISTS transactions (
     timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     user_id TEXT NOT NULL,          -- Discord User ID of the person who initiated
     message_id TEXT,                -- Discord interaction/message ID for reference
-    transaction_type TEXT NOT NULL, -- e.g., 'spend', 'deposit', 'adjustment', 'splurge_primary', 'splurge_fund', 'subscription'
+    transaction_type TEXT NOT NULL, -- 'spend', 'deposit', 'adjustment', 'splurge_primary', 'splurge_fund', 'subscription_expense', 'recurring_income'
     FOREIGN KEY (envelope_id) REFERENCES envelopes (id) ON DELETE CASCADE
 );
-2.3. products
+```
 
-SQL
+### 3.3. `products`
+```sql
 CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     price REAL NOT NULL,        -- Unit price
     envelope_id INTEGER NOT NULL,
     description TEXT,
-    FOREIGN KEY (envelope_id) REFERENCES envelopes (id) ON DELETE CASCADE -- Or SET NULL if preferred
+    FOREIGN KEY (envelope_id) REFERENCES envelopes (id) ON DELETE CASCADE
 );
-2.4. shortcuts
+```
 
-(Schema based on original design; implementation deferred)
-
-SQL
+### 3.4. `shortcuts` (Implementation Deferred)
+```sql
 CREATE TABLE IF NOT EXISTS shortcuts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
-    command_template TEXT NOT NULL -- e.g., "spend <envelope_name> {} <base_description>"
+    command_template TEXT NOT NULL -- e.g., "spend EnvelopeName {} Base Description"
 );
-2.5. system_state
+```
 
-SQL
+### 3.5. `system_state`
+```sql
 CREATE TABLE IF NOT EXISTS system_state (
     key TEXT PRIMARY KEY,
-    value TEXT
+    value TEXT -- e.g., key='last_update_processed_month', value='2025-05'
 );
-2.6. savings_goals (Future Table)
+```
 
-SQL
+### 3.6. `savings_goals` (Future Table)
+```sql
 CREATE TABLE IF NOT EXISTS savings_goals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     goal_name TEXT NOT NULL UNIQUE,
@@ -121,110 +133,167 @@ CREATE TABLE IF NOT EXISTS savings_goals (
     notes TEXT,
     FOREIGN KEY (envelope_id) REFERENCES envelopes (id) ON DELETE CASCADE
 );
-2.7. recurring_transactions (Future Table for Subscriptions/Income)
+```
 
-SQL
+### 3.7. `recurring_transactions` (Future Table)
+```sql
 CREATE TABLE IF NOT EXISTS recurring_transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    amount REAL NOT NULL, -- Positive for income, negative for expense, or use type
+    amount REAL NOT NULL,
     transaction_type TEXT NOT NULL, -- 'expense' or 'income'
     envelope_id INTEGER NOT NULL,
-    frequency TEXT NOT NULL, -- e.g., "monthly", "yearly", "weekly"
-    day_of_month INTEGER, -- For monthly (1-31, handle short months)
-    month_of_year INTEGER, -- For yearly (1-12)
-    day_of_week INTEGER, -- For weekly (0-6)
+    frequency TEXT NOT NULL, -- e.g., "monthly", "yearly", "weekly:MONDAY", "days:14", "bimonthly:15_and_last"
+    day_of_month INTEGER, 
+    month_of_year INTEGER, 
+    day_of_week INTEGER, 
     description TEXT,
     next_due_date DATETIME NOT NULL,
-    user_id TEXT NOT NULL, -- Who defined it/whose context if individual envelope
+    last_processed_date DATETIME,
+    user_id TEXT NOT NULL, 
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
     FOREIGN KEY (envelope_id) REFERENCES envelopes (id) ON DELETE CASCADE
 );
-3. Configuration
-.env file:
-DISCORD_BOT_TOKEN: The bot's Discord token.
-DATABASE_PATH: Path to the SQLite database file (e.g., data/envelope_buddy.sqlite).
-COUPLE_USER_ID_1: Discord User ID of the first user.
-COUPLE_USER_ID_2: Discord User ID of the second user.
-USER_NICKNAME_1: Nickname for User 1 (e.g., "PartnerA").
-USER_NICKNAME_2: Nickname for User 2 (e.g., "PartnerB").
-RUST_LOG: Logging configuration (e.g., envelope_buddy=debug,info).
-DEV_GUILD_ID (Optional): For fast registration of slash commands to a specific test server.
-LOG_CHANNEL_ID (Future): Channel ID for persistent logging of database-modifying commands.
-config.toml file:
-Defines the initial set of envelopes (name, category, allocation, is_individual, rollover). These are seeded into the database on first run or if missing (with re-enable logic).
-4. Command System (Poise Framework with Slash Commands)
-4.1. Implemented Commands
+```
 
-General:
-/ping: Replies "Pong!" to check bot responsiveness.
-Envelope Management:
-/report: Displays a full report of all active envelopes in an embed, including balance, allocation, actual amount spent this month, expected spending pace for the month, and a status indicator (🟢🟡🔴⚪).
-/create_envelope name:<name> category:<cat> allocation:<amt> is_individual:<bool> rollover:<bool>: Creates a new envelope. If an envelope with the same name (and user context for individual) was soft-deleted, it re-enables it and updates its properties based on provided optional parameters (otherwise, old properties are kept; balance resets to new/effective allocation). For new individual types, creates instances for both configured users.
-/delete_envelope name:<name>: Soft-deletes an envelope (sets is_deleted = true). User is informed it can be re-enabled.
-/update: Performs the monthly envelope processing:
-Checks system_state to prevent multiple runs for the same month.
-For each active envelope:
-If rollover = true, balance = balance + allocation.
-If rollover = false, balance = allocation.
-Prunes transactions older than a defined period (e.g., ~13 months).
-Updates system_state with the month processed (e.g., "YYYY-MM").
-Transaction Posting:
-/spend envelope_name:<env> amount:<amt> [description:<desc>]: Records a spend transaction from the specified envelope (user's own individual or shared). Autocompletes envelope names. Replies with a mini-report embed for the affected envelope.
-/addfunds envelope_name:<env> amount:<amt> [description:<desc>]: Adds funds to the specified envelope. Records a "deposit" transaction. Autocompletes envelope names. Replies with a mini-report embed.
-Product Management (as subcommands of /product):
-/product add name:<name> total_price:<price> envelope:<env_name> [quantity:<num>] [description:<text>]: Adds a new product, calculating unit price from total price and quantity (quantity defaults to 1). envelope_name uses autocomplete.
-/product list: Lists all defined products and their details (price, linked envelope) in an embed.
-/product update name:<name> total_price:<price> [quantity:<num>]: Updates an existing product's unit price, calculated from total price and quantity (quantity defaults to 1). name uses autocomplete.
-/product consume name:<name> [quantity:<num>]: Records an expense by "consuming" a product. Debits the product's linked envelope. If the product is linked to an individual envelope "type" (e.g., "Hobby"), it debits the command issuer's specific instance of that "Hobby" envelope. name uses autocomplete. Quantity defaults to 1. Replies with a mini-report.
-4.2. Planned Future Commands & Features
+## 4. Configuration
 
-Splurge Spending:
-Modify /spend or create /splurgespend to allow splitting an expense between a primary envelope and the dedicated "Splurge" envelope. User specifies total expense and amount for splurge.
-Undo Command:
-/undo: Reverts the effects of the last global financial transaction (spend, addfunds, product/shortcut use). Shows a confirmation and mini-report. Handles overdrafts by allowing balance to go negative.
-Transaction History (Enhanced):
-/history envelope_name:<env> [month:<1-12>] [year:<YYYY>]: Displays transactions for the specified envelope and period (defaults to current month/year). Formats output clearly (date, description, amount with sign, type).
-Transaction Editing:
-(Re-evaluation needed) Original idea: reply-based editing. For slash commands, a dedicated /edit_transaction <id> ... might be more appropriate if this feature is pursued.
-Recurring Subscriptions / Income:
-/subscription add name:<name> amount:<amt> envelope:<env> frequency:<freq> day:<day_of_month_or_week> [description:<desc>]: Define recurring expenses.
-/recurring_income add ...: Similar for recurring income.
-/subscription list, /subscription delete, /subscription edit.
-Automatic daily processing by the bot. Notifications for processing and overdrafts.
-Savings Goals:
-/goal set <envelope_name> <goal_name> <target_amount> [target_date].
-/goal remove <goal_name>.
-/goal list.
-Automatic check and notification on goal met (e.g., during daily process).
-Fund Transfers:
-/transfer <amount> from_envelope:<source> to_envelope:<target>.
-Define rules for allowed transfer paths (e.g., individual to shared, individual A to individual B).
-Product/Shortcut Management:
-/product delete <name> (uses product_name_autocomplete).
-/shortcut add <name> <template_string> (if shortcuts are re-prioritized).
-/shortcut delete <name> (if shortcuts are re-prioritized).
-/shortcuts list (if shortcuts are re-prioritized).
-5. Message Processing and UX
-Slash Commands: Primary interaction method via poise.
-Autocomplete: Implemented for envelope names, product names, and shortcut names to improve UX. Case-insensitive.
-Mini-Reports: Embeds showing the status of an affected envelope are sent as part of the reply to commands like /spend, /addfunds, /product consume.
-Dual Output (Future):
-Commands modifying the database will provide an ephemeral reply to the command issuer.
-A non-ephemeral, persistent copy of this reply/log will be sent to a designated log channel (ID set via .env or command).
-The log channel will receive a daily full /report triggered by the bot's internal scheduler.
-6. Key Operations Logic (Implemented)
-Monthly Update (/update): Handles rollovers/resets based on envelope.rollover. Prevents re-run for the same month using system_state. Prunes transactions older than ~13 months.
-Spending Progress Tracking (/report): Calculates daily allocation, expected spending vs. actual spending (from transactions for the month for display, and allocation - balance for pace indicator) for the current month. Displays 🟢🟡🔴⚪ indicators.
-Initial Data Seeding: config.toml provides initial envelope definitions. On startup, these are seeded into the database, respecting the "re-enable if soft-deleted" logic. Individual envelope types from config create two instances, one for each configured user.
-7. Implementation Stack (Current)
-Language: Rust
-Discord Interaction: serenity crate, with poise framework for slash commands.
-Database: SQLite via rusqlite.
-Async Runtime: tokio.
-Logging: tracing with tracing-subscriber.
-Configuration: toml for config.toml, dotenvy for .env.
-Date/Time: chrono.
-8. Installation and Setup
-Deployment target: Raspberry Pi.
-Configuration via .env (for secrets and instance-specifics) and config.toml (for initial envelope structure).
-(Future: Systemd service for automatic startup on Pi).
+* **`.env` file:** For secrets and instance-specific settings.
+    * `DISCORD_BOT_TOKEN`
+    * `DATABASE_PATH` (e.g., `data/envelope_buddy.sqlite`)
+    * `COUPLE_USER_ID_1`, `COUPLE_USER_ID_2`
+    * `USER_NICKNAME_1`, `USER_NICKNAME_2`
+    * `RUST_LOG` (e.g., `envelope_buddy=info`)
+    * `DEV_GUILD_ID` (Optional, for fast command registration during development)
+    * `BACKUP_CHANNEL_ID` (For bot-assisted backup to Discord feature)
+    * `LOG_CHANNEL_ID` (Future, for persistent command logging)
+* **`config.toml` file:**
+    * Defines the initial set of envelopes (name, category, allocation, is\_individual, rollover). Seeded into the database.
+
+## 5. Command System (Poise Framework with Slash Commands)
+
+Commands are structured into top-level "action" commands for frequent use and grouped "management" commands under `/manage`.
+
+### 5.1. Action Commands (Top-Level)
+
+* **Implemented:**
+    * `/ping`: Replies "Pong!"
+    * `/report`: Full embed report of active envelopes (balance, allocation, actual spent, expected pace, status indicators).
+    * `/spend <envelope_name> <amount> [description]`: Records a spend. Autocompletes envelope. Replies with an ephemeral message + mini-report. (Future: logs to channel).
+    * `/addfunds <envelope_name> <amount> [description]`: Adds funds. Records "deposit". Autocompletes envelope. Replies with ephemeral message + mini-report. (Future: logs to channel).
+    * `/product <name_to_use> [quantity] [note]`: Uses a predefined product to log an expense. `name_to_use` uses autocomplete. Quantity defaults to 1. Note appends to description. Replies with ephemeral message + mini-report. (Future: logs to channel).
+    * `/update`: Performs monthly envelope rollovers/resets and prunes old transactions.
+* **Planned Future Action Commands (Top-Level):**
+    * `/history <envelope_name> [month:<num>] [year:<num>]`: Displays transaction history.
+    * `/undo`: Reverts the last global financial transaction.
+    * `/splurgespend` (or similar, if not an option on `/spend`): For splurge mechanism.
+    * `/shortcut <name_to_use> <amount> [note]` (If Shortcuts are implemented).
+
+### 5.2. Management Commands (Grouped under `/manage`)
+
+* **Parent Command:** `/manage`
+    * Running `/manage` by itself shows help for its available entity subcommands.
+
+* **Implemented Management Subcommands:**
+    * `/manage envelope create name:<name> category:<cat> allocation:<amt> [is_individual:<bool>] [rollover:<bool>]`: Creates or re-enables/updates a soft-deleted envelope.
+    * `/manage envelope delete name:<name>`: Soft-deletes an envelope.
+    * `/manage product add name:<name> total_price:<price> envelope:<env_name> [quantity:<num>] [description:<text>]`: Adds a new product (unit price calculated).
+    * `/manage product list`: Lists all defined products.
+    * `/manage product update name:<name> total_price:<price> [quantity:<num>]`: Updates a product's unit price.
+    * `/manage product delete name:<name>`: Deletes a product.
+* **Planned Future Management Subcommands:**
+    * `/manage envelope set_balance <envelope_name> <balance> [user:<user>] [reason:<text>]`
+    * `/manage envelope edit <name> [new_attributes...]`
+    * `/manage subscription add/list/delete/edit ...`
+    * `/manage recurring_income add/list/delete/edit ...`
+    * `/manage goal set/list/remove ...`
+    * `/manage set_log_channel <channel>`
+    * `/manage backup create_and_upload`
+    * `/manage shortcut add/list/delete ...` (If Shortcuts are implemented).
+
+## 6. Message Processing and UX
+
+* **Interaction Model:** Primarily Slash Commands using `poise`.
+* **Autocomplete:** Case-insensitive for envelope names, product names, (future) shortcut names, powered by in-memory caches that refresh on CRUD operations and startup.
+* **Feedback:** Embeds for reports. Mini-report embeds after data-modifying actions.
+* **Confirmations (Future):** For destructive actions (e.g., delete commands), use button-based confirmations.
+* **Help System (Future):** A comprehensive custom help command that correctly reflects the grouped command structure.
+* **Dual Output (Future Plan):**
+    * Database-modifying commands: Ephemeral reply to issuer; persistent log to `LOG_CHANNEL_ID`.
+    * Daily automated full `/report` to `LOG_CHANNEL_ID`.
+
+## 7. Key Operations Logic
+
+* **Monthly Update (`/update`):** Implemented. Handles rollovers/resets. Prevents re-run for the same month. Prunes transactions older than ~13 months. Will prompt to reconcile overdrafts.
+* **Spending Progress Tracking (`/report`):** Implemented. Calculates daily allocation, expected spending vs. "spent from allocation" (for indicator emoji) and "actual spent this month" (for display). Displays 🟢🟡🔴⚪ indicators.
+* **Initial Data Seeding (`config.toml`):** Implemented with "re-enable if soft-deleted" logic for envelopes.
+* **Cache Management:** Implemented for autocomplete (envelope info, product names); populated on startup and refreshed after relevant CRUD operations.
+* **Scheduling Mechanism (Future):** Required for automated daily reports, processing recurring transactions, and savings goal notifications. Will likely run as a `tokio::task` within the bot, checking daily at a set time (e.g., midnight Pi local time).
+* **Overdraft Handling:** Overdrafts are allowed. A warning will be issued when an overdraft occurs. Monthly process may prompt for reconciliation.
+
+## 8. Logging
+
+* **Engine:** `tracing` with `tracing-subscriber`.
+* **Output:** Configured to log to both `stdout`/`stderr` (for development/direct execution) AND a local file (e.g., `envelope_buddy.log`) using `tracing_appender` for rotation and non-blocking writes.
+* **Level:** Configurable via `RUST_LOG` environment variable.
+
+## 9. Coding & Documentation Standards
+
+**A. For User-Exposed Slash Commands**
+1.  **Clarity and Naming:**
+    * Top-level commands for frequent actions (e.g., `/spend`, `/product` (for using)) are direct and intuitive.
+    * Management/setup commands are grouped under `/manage` (e.g., `/manage envelope create`).
+2.  **Descriptions (Discord UI):**
+    * Every command, subcommand group, subcommand, and parameter **must** have a clear, concise `description` in its `#[poise::command(...)]` or parameter attribute, adhering to Discord's character limits.
+    * Parent command descriptions summarize purpose or list subcommands.
+3.  **Parameters:**
+    * Consistent, descriptive, `snake_case` names.
+    * Use `Option<T>` for optional parameters; default behavior documented in `description`.
+    * Employ `#[autocomplete = "..."]` for parameters selecting from existing entities. Autocomplete must be case-insensitive.
+    * Input validation at the start of command logic; user-friendly error messages for invalid input.
+4.  **Output & Feedback:**
+    * **Success:** Clear confirmation messages. Use Discord Embeds for structured data.
+    * **Errors:** User-friendly error messages, avoiding raw internal details. Log detailed errors internally.
+    * **Dual Output (Future Standard):** Data-modifying commands: ephemeral reply to issuer, persistent log to `LOG_CHANNEL_ID`.
+5.  **Testing:** Logic within commands should be testable, potentially by extracting to helpers. Manual end-to-end testing in Discord is essential.
+
+**B. For All Rust Functions (Backend, DB, Helpers, etc.)**
+1.  **Documentation Comments:** `///` for all `pub` items and important `pub(crate)` items (purpose, parameters, returns, errors/panics).
+2.  **Internal Comments:** `//` for complex or non-obvious logic.
+3.  **Unit Tests:** Comprehensive unit tests for all `db` module functions, `cache` module functions, and significant logic helpers. Cover success paths, errors, edge cases. Use in-memory SQLite for DB tests. Use `init_test_tracing()`.
+4.  **Error Handling:** Consistent use of `crate::errors::Error` and `Result<T, Error>`. Propagate with `?`. Map underlying errors into custom `Error` variants. Avoid `unwrap()`/`expect()` in application logic (ok in tests for setup).
+5.  **Logging (`tracing`):** Consistent use of `trace!`, `debug!`, `info!`, `warn!`, `error!`. Use `#[instrument]` judiciously, skipping sensitive data.
+6.  **Modularity & Readability:** Adhere to `cargo fmt`. Keep functions/modules focused. Descriptive names. Run `cargo clippy` and address lints (including `result_large_err` by boxing error variants or returning `Box<Error>`).
+7.  **Currency Precision (Future Consideration):** Note potential future need to switch from `f64` to a decimal type or integer (cents) for currency if precision issues arise.
+
+## 10. Data Backup Strategy
+* Regular off-Pi backups of the `envelope_buddy.sqlite` database are critical.
+* SQLite database files are expected to remain small for personal use.
+* **User-Initiated Method (Primary for now):**
+    * `/manage backup create_and_upload`: Creates an immediate backup and uploads it to the Discord channel specified by `BACKUP_CHANNEL_ID` in `.env`.
+* **Future Automated Options:**
+    * Scheduled backups to personal cloud storage (e.g., using `rclone` via a cron job on the Pi).
+    * Bot reminder to prompt users to run the manual backup command.
+
+## 11. Future Architectural Improvements (Deferred)
+* **Refactor Database Layer to use an ORM:** Consider migrating from `rusqlite` with raw SQL to an ORM like `SeaORM` for more idiomatic Rust database interactions and to reduce manual SQL.
+* **Decouple Core Logic Layer from Frontend (Poise/Discord):** To allow the core budgeting engine to be potentially used by other frontends and improve testability of business logic independent of Discord.
+* **Improve Atomicity for Complex Operations:** Ensure multi-step database operations (e.g., monthly update, splurge) are fully transactional.
+
+## 12. Implementation Stack
+
+* **Language:** Rust
+* **Discord Interaction:** `serenity` crate, `poise` framework.
+* **Database:** SQLite via `rusqlite`.
+* **Async Runtime:** `tokio`.
+* **Logging:** `tracing`, `tracing-subscriber`, `tracing-appender` (for file logging).
+* **Configuration:** `toml` crate for `config.toml`, `dotenvy` for `.env`.
+* **Date/Time:** `chrono`.
+
+## 13. Installation and Setup
+
+* **Target Deployment:** Raspberry Pi.
+* **Compilation:** Cross-compilation from a development machine using `cross` is recommended.
+* **Deployment:** Transfer compiled binary, `.env`, and `config.toml` to a dedicated application directory on the Pi (e.g., `/home/pi/envelope_buddy_app/`).
+* **Persistence:** Runs as a `systemd` service for automatic startup and management.
+* **Remote Development:** SSH access with key-based authentication. VS Code Remote - SSH for managing the Pi. VS Code Tasks on the local development machine for automating the build-deploy-restart cycle.
