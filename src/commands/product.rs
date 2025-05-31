@@ -7,7 +7,20 @@ use crate::{Error, Result, db};
 use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::AutocompleteChoice;
 use tracing::{error, info, instrument, trace, warn};
-// Autocomplete function for existing product names
+
+/// Provides autocomplete suggestions for product names based on partial user input.
+///
+/// This function queries an in-memory cache of product names.
+/// It performs a case-insensitive "contains" search and returns up to 25 matching choices.
+///
+/// # Parameters
+///
+/// * `ctx`: The command context, used to access shared data like the product names cache.
+/// * `partial`: The partial string input by the user for the product name.
+///
+/// # Returns
+///
+/// A `Vec<AutocompleteChoice>` containing product names that match the partial input.
 async fn product_name_autocomplete(ctx: Context<'_>, partial: &str) -> Vec<AutocompleteChoice> {
     trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request for product_name");
     let _db_pool = &ctx.data().db_pool;
@@ -30,7 +43,15 @@ async fn product_name_autocomplete(ctx: Context<'_>, partial: &str) -> Vec<Autoc
     choices
 }
 
-/// Parent command for managing products. Use subcommands like add, list, update, use.
+/// Parent command for managing and using predefined, fixed-price products.
+///
+/// Products allow for quick logging of expenses by linking a named item to a
+/// specific envelope and unit price. This command groups subcommands for adding,
+/// listing, updating, using (consuming), and deleting products.
+///
+/// Running this command by itself displays help text for its subcommands.
+///
+/// TODO: Think about unified way to handle help text for all commands
 #[poise::command(
     slash_command,
     subcommands(
@@ -55,7 +76,30 @@ pub async fn product(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Adds a new fixed-price product, calculating unit price from total price and quantity.
+/// Adds a new fixed-price product to the system.
+///
+/// The unit price of the product is automatically calculated from the `total_price`
+/// and `quantity` provided (quantity defaults to 1 if not specified).
+/// The product name must be unique. It is linked to a specified envelope
+/// from which expenses will be deducted when the product is used.
+///
+/// # Parameters
+///
+/// * `name`: Unique name for the product (e.g., '12-Pack Soda').
+/// * `total_price`: Total price paid for the given quantity (e.g., 6.99). Cannot be negative.
+/// * `envelope_name`: Name of the envelope this product's cost should be debited from. Autocompletes.
+/// * `quantity_opt`: Optional quantity for the `total_price` (e.g., 12). Defaults to 1.0 if omitted. Must be positive.
+/// * `description`: Optional textual description for the product.
+///
+/// # Errors
+///
+/// Returns `Error::Command` if the product name is empty, total price is negative,
+/// or quantity is not positive.
+/// Returns `Error::Database` or `Error::Command` if the specified `envelope_name`
+/// cannot be found or is inaccessible to the user.
+/// Returns `Error::Database` if a product with the same name already exists (due to UNIQUE constraint)
+/// or if any other database error occurs during insertion.
+/// Can also propagate errors from cache refresh operations.
 #[poise::command(slash_command, rename = "add")]
 #[instrument(skip(ctx))]
 pub async fn product_add(
@@ -185,7 +229,15 @@ pub async fn product_add(
     Ok(())
 }
 
-/// Lists all available products.
+/// Lists all defined products, their unit prices, linked envelopes, and descriptions.
+///
+/// The information is presented in a Discord embed. If no products are defined,
+/// a message indicating this will be shown.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if fetching products from the database fails.
+/// Returns `Error::FrameworkError` if sending the Discord reply fails.
 #[poise::command(slash_command, rename = "list")]
 #[instrument(skip(ctx))]
 pub async fn product_list(ctx: Context<'_>) -> Result<()> {
@@ -227,7 +279,27 @@ pub async fn product_list(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Uses a predefined product to record an expense.
+/// Records an expense by using a predefined product.
+///
+/// This command deducts the total cost (unit price * quantity) of the specified
+/// product from the appropriate envelope. If the product is linked to an individual
+/// envelope type, the cost is deducted from the command issuer's instance of that
+/// envelope. If linked to a shared envelope, the shared envelope is debited.
+/// A mini-report showing the updated envelope status is sent as a reply.
+///
+/// # Parameters
+///
+/// * `name`: Name of the product to use. Autocompletes from existing products.
+/// * `quantity_opt`: Optional quantity of the product to use. Defaults to 1 if omitted. Must be positive.
+///
+/// # Errors
+///
+/// Returns `Error::Command` if the quantity is not positive, if the product is not found,
+/// if the linked base envelope is missing/inactive, or if the user does not have the
+/// required individual envelope instance.
+/// Returns `Error::Database` for issues during database operations (fetching product/envelope,
+/// updating balance, creating transaction).
+/// Returns `Error::FrameworkError` if sending the Discord reply fails.
 #[poise::command(slash_command, rename = "use")]
 #[instrument(skip(ctx))]
 pub async fn product_use(
@@ -429,7 +501,23 @@ pub async fn product_use(
     Ok(())
 }
 
-/// Updates a product's price, optionally by calculating from a total and quantity.
+/// Updates the unit price of an existing product.
+///
+/// The new unit price is calculated from the provided `total_price` and an
+/// optional `quantity` (which defaults to 1 if omitted).
+///
+/// # Parameters
+///
+/// * `name`: Name of the product to update. Autocompletes from existing products.
+/// * `total_price`: New total price paid (e.g., 10.00). This becomes the unit price if quantity is 1 or omitted. Cannot be negative.
+/// * `quantity_opt`: Optional new quantity purchased (e.g., 3). Defaults to 1.0 if omitted. Must be positive.
+///
+/// # Errors
+///
+/// Returns `Error::Command` if the quantity is not positive or total price is negative.
+/// Returns `Error::Database` if the product is not found or if the database update fails.
+/// Can also propagate errors from cache refresh operations.
+/// Returns `Error::FrameworkError` if sending the Discord reply fails.
 #[poise::command(slash_command, rename = "update")]
 #[instrument(skip(ctx))]
 pub async fn product_update(
@@ -538,6 +626,18 @@ pub async fn product_update(
     Ok(())
 }
 
+/// Deletes a product from the system by its name.
+///
+/// # Parameters
+///
+/// * `name`: Name of the product to delete. Autocompletes from existing products.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if the database deletion fails.
+/// Can also propagate errors from cache refresh operations.
+/// Returns `Error::FrameworkError` if sending the Discord reply fails (e.g., if the product
+/// was not found and a "not found" message is sent).
 #[poise::command(slash_command, rename = "delete")]
 #[instrument(skip(ctx))]
 pub async fn product_delete(
