@@ -1,5 +1,3 @@
-#![allow(clippy::result_large_err)]
-
 mod bot;
 mod cache;
 mod commands;

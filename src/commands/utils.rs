@@ -3,12 +3,23 @@ use crate::config::AppConfig;
 use crate::db::{self, DbPool};
 use crate::models::Envelope;
 use chrono::{Datelike, Local, NaiveDate};
-use poise::serenity_prelude::AutocompleteChoice;
+use poise::serenity_prelude::{self, AutocompleteChoice};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tracing::trace;
 
-// Helper function to get current date info
+/// Returns current date information relevant for monthly budget tracking.
+///
+/// # Returns
+///
+/// A tuple containing:
+/// * `NaiveDate`: The current local date.
+/// * `f64`: The current day of the month as a float.
+/// * `f64`: The total number of days in the current month as a float.
+/// * `i32`: The current year.
+/// * `u32`: The current month (1-12).
+// Assuming this function doesn't error out due to date logic being robust.
+// If it could, an # Errors section would be needed.
 pub(crate) fn get_current_month_date_info() -> (NaiveDate, f64, f64, i32, u32) {
     let now_local_date = Local::now().date_naive();
     let current_day_of_month = now_local_date.day() as f64;
@@ -32,7 +43,32 @@ pub(crate) fn get_current_month_date_info() -> (NaiveDate, f64, f64, i32, u32) {
     )
 }
 
-// Helper function to generate report field data for a single envelope
+/// Generates the field name and value for a single envelope in a report embed.
+///
+/// This includes the envelope's name, user indicator (shared or owner's nickname),
+/// balance, allocation, actual spending for the month, expected spending pace,
+/// and a status emoji based on spending progress.
+///
+/// # Parameters
+///
+/// * `envelope`: The `Envelope` struct to generate report data for.
+/// * `app_config`: The application configuration, used for user nicknames.
+/// * `db_pool`: The database connection pool, used to fetch actual monthly spending.
+/// * `current_day_of_month`: The current day of the month.
+/// * `days_in_month`: The total number of days in the current month.
+/// * `year`: The current year.
+/// * `month`: The current month.
+///
+/// # Returns
+///
+/// Returns `Ok((String, String))` where the first string is the field name
+/// (e.g., "Groceries (Shared)") and the second string is the formatted field value
+/// containing all the details.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if fetching actual monthly spending fails.
+/// May also propagate errors from database interactions within helper functions.
 pub(crate) async fn generate_single_envelope_report_field_data(
     envelope: &Envelope,
     app_config: &Arc<AppConfig>, // Pass Arc<AppConfig>
@@ -87,6 +123,24 @@ pub(crate) async fn generate_single_envelope_report_field_data(
     Ok((field_name, field_value))
 }
 
+/// Provides autocomplete choices for envelope names accessible to the invoking user.
+///
+/// It searches through a cache of active envelope names (both shared and the user's
+/// own individual envelopes) that partially match the user's input.
+/// The search is case-insensitive and matches if the envelope name *contains*
+/// the partial input. Results are sorted alphabetically.
+///
+/// # Parameters
+///
+/// * `ctx`: The command context, used to access shared data (caches, user info).
+/// * `partial`: The partial string input by the user for the envelope name.
+///
+/// # Returns
+///
+/// A `Vec<AutocompleteChoice>` containing up to 25 matching envelope names.
+// This function primarily interacts with a cache and Poise context; direct errors
+// it might return (other than from framework/cache access) are less common.
+// If cache access could fail in a way that needs documenting as an error, add it.
 pub(crate) async fn envelope_name_autocomplete(
     ctx: Context<'_>,
     partial: &str,
@@ -121,6 +175,70 @@ pub(crate) async fn envelope_name_autocomplete(
         "Returning envelope choices from richer cache, sorted by BTreeSet"
     );
     choices
+}
+
+/// Generates and sends a standardized mini-report embed for a single envelope.
+///
+/// This function is typically called after an operation (like spend, addfunds, product use)
+/// that modifies an envelope. It fetches current date information, generates the
+/// report content using `generate_single_envelope_report_field_data`, and sends
+/// it as a publicly visible embed in the channel where the command was invoked.
+///
+/// # Parameters
+///
+/// * `ctx`: The command `Context`, used for sending the reply and accessing shared data.
+/// * `updated_envelope`: A reference to the `Envelope` struct containing the latest
+///   data of the envelope to be reported.
+/// * `app_config`: An `Arc` reference to the `AppConfig`, required by
+///   `generate_single_envelope_report_field_data` for user nicknames.
+/// * `db_pool`: A reference to the `DbPool`, required by
+///   `generate_single_envelope_report_field_data` for fetching actual monthly spending.
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the mini-report embed was successfully generated and sent.
+///
+/// # Errors
+///
+/// This function can return an error if:
+/// - `generate_single_envelope_report_field_data` fails (e.g., `Error::Database`
+///   if fetching monthly spending encounters an issue).
+/// - Sending the reply via `ctx.send()` fails (e.g., `Error::FrameworkError`
+///   due to Discord API issues or permission problems).
+pub(crate) async fn send_mini_report_embed(
+    ctx: Context<'_>,
+    updated_envelope: &Envelope,
+    app_config: &Arc<AppConfig>,
+    db_pool: &DbPool,
+) -> Result<(), Error> {
+    let (_now_local_date, current_day_of_month, days_in_month, year, month) =
+        get_current_month_date_info();
+
+    let (field_name, field_value) = generate_single_envelope_report_field_data(
+        updated_envelope,
+        app_config,
+        db_pool,
+        current_day_of_month,
+        days_in_month,
+        year,
+        month,
+    )
+    .await?;
+
+    let mini_report_embed = serenity_prelude::CreateEmbed::default()
+        .title(format!("Update for: {}", field_name))
+        .description(field_value)
+        // TODO: Consider making the color dynamic based on the operation type
+        // For example, green for additions, yellow for spends/updates.
+        .color(0xF1C40F); // Yellow for spend/update (as an example)
+
+    ctx.send(
+        poise::CreateReply::default()
+            .embed(mini_report_embed)
+            .ephemeral(false), // Typically mini-reports are visible
+    )
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

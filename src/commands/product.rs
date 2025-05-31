@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use crate::bot::Context;
-use crate::commands::utils::{
-    envelope_name_autocomplete, generate_single_envelope_report_field_data,
-    get_current_month_date_info,
-};
+use crate::commands::utils::envelope_name_autocomplete;
 use crate::models::Envelope;
 use crate::{Error, Result, db};
 use poise::serenity_prelude as serenity;
@@ -395,47 +392,37 @@ pub async fn product_use(
 
     // 5. Reply with confirmation and mini-report
     // Fetch the *very latest* state of the envelope for the report, as balance has changed.
-    let final_envelope_state_for_report = db::get_envelope_by_id(
+    let final_envelope_state_for_report = match db::get_envelope_by_id(
         db_pool,
         actual_target_envelope.id,
     )
     .await?
-    .ok_or_else(|| {
-        Error::Command(format!(
-            "Critical error: Failed to re-fetch envelope {} for mini-report after using product.",
-            actual_target_envelope.name
-        ))
-    })?;
+    {
+        Some(env) => env,
+        None => {
+            error!(
+                "Critical error: Failed to re-fetch envelope {} for mini-report after using product.",
+                actual_target_envelope.name
+            );
+            // Send a simpler confirmation if the full report can't be generated
+            ctx.say(format!(
+                "Used product '{}' (x{}). Total cost: ${:.2}. (Mini-report generation failed).",
+                product.name, quantity, total_cost
+            ))
+            .await?;
+            return Err(Error::Command(format!(
+                "Failed to re-fetch envelope {} for mini-report.",
+                actual_target_envelope.name
+            )));
+        }
+    };
 
-    let (_now_local_date, current_day_of_month, days_in_month, year, month) =
-        get_current_month_date_info(); // Assuming this util is accessible
-    let (field_name, field_value) = generate_single_envelope_report_field_data(
-        &final_envelope_state_for_report, // Use the freshest envelope data
+    // Call the new utility function
+    crate::commands::utils::send_mini_report_embed(
+        ctx,
+        &final_envelope_state_for_report,
         &app_config,
         db_pool,
-        current_day_of_month,
-        days_in_month,
-        year,
-        month,
-    )
-    .await?;
-
-    let mini_report_embed = serenity::CreateEmbed::default()
-        .title(format!("Update for: {}", field_name))
-        .description(field_value)
-        .color(0xF1C40F); // Yellow for spend/update
-
-    // Optional: Decide if you still want the separate content text or if embed is enough
-    let confirmation_text = format!(
-        "Used product '{}' (x{}) from envelope '{}'. Total cost: ${:.2}.",
-        product.name, quantity, final_envelope_state_for_report.name, total_cost
-    );
-
-    ctx.send(
-        poise::CreateReply::default()
-            .content(confirmation_text) // You can remove this if the embed is sufficient
-            .embed(mini_report_embed)
-            .ephemeral(false), // Make it visible to everyone
     )
     .await?;
 

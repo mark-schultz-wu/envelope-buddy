@@ -1,13 +1,15 @@
 use crate::bot::{Context, Error};
-use crate::commands::utils::{
-    envelope_name_autocomplete, generate_single_envelope_report_field_data,
-    get_current_month_date_info,
-};
+use crate::commands::utils::{envelope_name_autocomplete, send_mini_report_embed};
 use crate::db;
-use poise::serenity_prelude as serenity;
 use tracing::{info, instrument, warn};
 
 /// Record an expense from an envelope.
+///
+/// Allows a user to specify an envelope they own or a shared envelope,
+/// an amount, and an optional description to record a spending transaction.
+/// The envelope's balance will be debited by the amount, and a transaction
+/// record will be created. A mini-report showing the updated envelope status
+/// will be sent as a reply.
 #[poise::command(slash_command)]
 #[instrument(skip(ctx))]
 pub async fn spend(
@@ -35,12 +37,9 @@ pub async fn spend(
 
     let data = ctx.data();
     let db_pool = &data.db_pool;
+    let app_config = &data.app_config; // Get app_config for the mini-report utility
 
-    // Start a database transaction for atomicity
-    // To do this properly with Arc<Mutex<Connection>>, you'd need a helper
-    // or to pass the locked connection through. For simplicity now, we'll do sequential operations.
-    // A better approach would be a db::perform_spend_transaction function.
-
+    // 1. Fetch the target envelope to get its ID and current balance
     let target_envelope =
         match db::get_user_or_shared_envelope(db_pool, &envelope_name, &author_id_str).await? {
             Some(env) => env,
@@ -54,8 +53,7 @@ pub async fn spend(
             }
         };
 
-    // Check if the envelope actually belongs to the user if it's individual
-    // The query get_user_or_shared_envelope should handle this by prioritizing user's own.
+    // 2. Permission check (ensure user owns the individual envelope if it's individual)
     if target_envelope.is_individual && target_envelope.user_id.as_deref() != Some(&author_id_str) {
         warn!(
             "User {} tried to spend from {}'s envelope '{}'. Denied.",
@@ -71,33 +69,23 @@ pub async fn spend(
         return Ok(());
     }
 
-    let new_balance = target_envelope.balance - amount;
-    // Optional: Check for overdraft if you want to prevent it
-    // if new_balance < 0.0 {
-    //     ctx.say(format!("Spending ${:.2} from '{}' would overdraft it (current balance ${:.2}). Transaction cancelled.", amount, envelope_name, target_envelope.balance)).await?;
-    //     return Ok(());
-    // }
-
-    // Update balance
-    db::update_envelope_balance(db_pool, target_envelope.id, new_balance).await?;
-
-    // Create transaction record
     let desc_str = description.as_deref().unwrap_or("No description");
-    let discord_message_id = ctx.id().to_string(); // Gets the interaction ID, which can serve as a message_id ref
+    let discord_interaction_id = ctx.id().to_string();
 
-    db::create_transaction(
+    // 3. Call the new atomic database function to execute the spend
+    db::transactions::execute_spend_transaction(
         db_pool,
         target_envelope.id,
-        amount, // Store the positive spending amount
+        target_envelope.balance,
+        amount,
         desc_str,
         &author_id_str,
-        Some(&discord_message_id),
-        "spend",
+        Some(&discord_interaction_id),
     )
     .await?;
 
-    // --- Mini-Report Logic ---
-    // Fetch the *updated* state of the envelope
+    // 4. Fetch the updated state of the envelope for the mini-report
+    // It's important to re-fetch to get the absolute latest state after the transaction.
     let updated_envelope = match db::get_user_or_shared_envelope(
         db_pool,
         &envelope_name,
@@ -107,43 +95,27 @@ pub async fn spend(
     {
         Some(env) => env,
         None => {
-            // This shouldn't happen if the above logic was correct, but handle defensively
+            // This case should be unlikely if the spend succeeded and the envelope wasn't
+            // deleted by another process almost simultaneously.
             warn!(
-                "Failed to fetch updated envelope for mini-report: {}",
-                envelope_name
+                "Failed to fetch updated envelope '{}' for mini-report after successful spend. User: {}",
+                envelope_name, author_id_str
             );
+            // Send a simple confirmation if the full report can't be generated.
+            // The `execute_spend_transaction` would have returned an error if the DB update failed.
+            // So here, the spend itself was successful.
             ctx.say(format!(
-                "Spent ${:.2} from '{}'. New balance: ${:.2}. (Could not fetch mini-report details).",
-                amount, envelope_name, new_balance
-            )).await?;
+                "Successfully spent ${:.2} from '{}'. (Could not generate detailed mini-report).",
+                amount, envelope_name
+            ))
+            .await?;
             return Ok(());
         }
     };
 
-    let (_now_local_date, current_day_of_month, days_in_month, year, month) =
-        get_current_month_date_info();
-    let (field_name, field_value) = generate_single_envelope_report_field_data(
-        &updated_envelope,
-        &ctx.data().app_config,
-        db_pool,
-        current_day_of_month,
-        days_in_month,
-        year,
-        month,
-    )
-    .await?;
-
-    let mini_report_embed = serenity::CreateEmbed::default()
-        .title(format!("Update for: {}", field_name)) // field_name includes user indicator
-        .description(field_value) // The multi-line details
-        .color(0xF1C40F); // Yellow color for spend/update
-
-    ctx.send(
-        poise::CreateReply::default()
-            .embed(mini_report_embed)
-            .ephemeral(false), // Make it visible to everyone in the channel
-    )
-    .await?;
+    // 5. Send the mini-report using the utility function
+    crate::commands::utils::send_mini_report_embed(ctx, &updated_envelope, app_config, db_pool)
+        .await?;
 
     Ok(())
 }
@@ -245,30 +217,7 @@ pub async fn addfunds(
             }
         };
 
-    let (_now_local_date, current_day_of_month, days_in_month, year, month) =
-        get_current_month_date_info();
-    let (field_name, field_value) = generate_single_envelope_report_field_data(
-        &updated_envelope,
-        &data.app_config,
-        db_pool,
-        current_day_of_month,
-        days_in_month,
-        year,
-        month,
-    )
-    .await?;
-
-    let mini_report_embed = serenity::CreateEmbed::default()
-        .title(format!("Update for: {}", field_name))
-        .description(field_value)
-        .color(0x2ECC71); // Green color for additions
-
-    ctx.send(
-        poise::CreateReply::default()
-            .embed(mini_report_embed)
-            .ephemeral(false), // Make it visible
-    )
-    .await?;
+    send_mini_report_embed(ctx, &updated_envelope, &ctx.data().app_config, db_pool).await?;
 
     Ok(())
 }

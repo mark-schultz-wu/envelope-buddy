@@ -7,6 +7,33 @@ use rusqlite::{OptionalExtension, params};
 use std::sync::Arc;
 use tracing::{debug, error, info, instrument, trace, warn};
 
+/// Seeds the database with initial envelope configurations from the `AppConfig`.
+///
+/// This function iterates through envelope configurations provided in `config.toml`.
+/// For each configuration:
+/// * If it's an individual envelope type, it attempts to create/re-enable an instance for each of the two configured users.
+/// * If it's a shared envelope type, it attempts to create/re-enable a single shared instance.
+///
+/// The logic includes:
+/// 1. Skipping if an active envelope with the same identifying characteristics already exists.
+/// 2. Re-enabling and updating a soft-deleted envelope if one is found, resetting its balance to the (new or old) allocation.
+///    The category, allocation, and rollover flag are updated from the config. `is_individual` status is fixed from the DB record.
+/// 3. Inserting a new envelope if no active or soft-deleted one exists, with its balance set to its allocation.
+///
+/// All operations are performed within a single database transaction.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `config`: An `Arc` clone of the `AppConfig` containing the envelope configurations from `config.toml`
+///             and the configured user IDs.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if:
+/// * The database lock cannot be acquired.
+/// * The transaction cannot be started or committed.
+/// * Any SQL statement preparation or execution fails.
 #[instrument(skip(pool, config))]
 pub async fn seed_initial_envelopes(pool: &DbPool, config: &Arc<AppConfig>) -> Result<()> {
     info!(
@@ -157,6 +184,15 @@ pub async fn seed_initial_envelopes(pool: &DbPool, config: &Arc<AppConfig>) -> R
     Ok(())
 }
 
+/// Fetches all active (not soft-deleted) envelopes from the database.
+///
+/// Envelopes are ordered alphabetically by name, and for individual envelopes
+/// with the same name, they are further ordered by user_id.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping the query results to `Envelope` structs.
 #[instrument(skip(pool))]
 pub async fn get_all_active_envelopes(pool: &DbPool) -> Result<Vec<Envelope>> {
     let conn = pool.lock().map_err(|_| {
@@ -190,6 +226,29 @@ pub async fn get_all_active_envelopes(pool: &DbPool) -> Result<Vec<Envelope>> {
     Ok(envelopes)
 }
 
+/// Fetches a specific envelope that is accessible to the given user.
+///
+/// This function prioritizes fetching an individual envelope matching the `envelope_name`
+/// and `user_id`. If no such individual envelope exists (or it's soft-deleted),
+/// it then attempts to fetch a shared envelope (where `user_id` is NULL) matching
+/// the `envelope_name`.
+/// Only active (not soft-deleted) envelopes are returned.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `envelope_name`: The name of the envelope to fetch.
+/// * `user_id`: The Discord User ID of the user attempting to access the envelope.
+///
+/// # Returns
+///
+/// Returns `Ok(Some(Envelope))` if an accessible active envelope is found.
+/// Returns `Ok(None)` if no matching active envelope is found for the user (either individual or shared).
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping the query result.
 #[instrument(skip(pool))]
 pub async fn get_user_or_shared_envelope(
     pool: &DbPool,
@@ -245,6 +304,22 @@ pub async fn get_user_or_shared_envelope(
     Ok(envelope_result)
 }
 
+/// Retrieves an envelope by its unique ID, if it's active (not soft-deleted).
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `envelope_id`: The ID of the envelope to retrieve.
+///
+/// # Returns
+///
+/// Returns `Ok(Some(Envelope))` if an active envelope with the given ID is found.
+/// Returns `Ok(None)` if no envelope is found with that ID or if it has been soft-deleted.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping the query result.
 #[instrument(skip(pool))]
 pub async fn get_envelope_by_id(pool: &DbPool, envelope_id: i64) -> Result<Option<Envelope>> {
     let conn = pool.lock().map_err(|_| {
@@ -273,6 +348,18 @@ pub async fn get_envelope_by_id(pool: &DbPool, envelope_id: i64) -> Result<Optio
     Ok(envelope_result)
 }
 
+/// Updates the balance of a specific envelope.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `envelope_id`: The ID of the envelope whose balance is to be updated.
+/// * `new_balance`: The new balance to set for the envelope.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock
+/// or executing the update statement.
 #[instrument(skip(pool))]
 pub async fn update_envelope_balance(
     pool: &DbPool,
@@ -293,6 +380,30 @@ pub async fn update_envelope_balance(
     Ok(())
 }
 
+/// Soft-deletes an envelope if it's accessible to the command issuer.
+///
+/// An envelope is considered accessible if it's a shared envelope or if it's an
+/// individual envelope owned by the `user_id` making the request.
+/// This function marks the envelope as `is_deleted = TRUE` but does not remove it
+/// from the database, allowing for potential re-enablement.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `envelope_name`: The name of the envelope to soft-delete.
+/// * `user_id`: The Discord User ID of the user attempting the deletion.
+///
+/// # Returns
+///
+/// Returns `Ok(true)` if an accessible active envelope was found and successfully soft-deleted.
+/// Returns `Ok(false)` if no accessible active envelope was found with that name for the user,
+/// or if the envelope was already soft-deleted, or if an individual envelope was found but
+/// did not belong to the `user_id`.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock
+/// or executing database statements.
 #[instrument(skip(pool))]
 pub async fn soft_delete_envelope(
     pool: &DbPool,
@@ -559,6 +670,49 @@ pub struct CreateUpdateEnvelopeArgs<'a> {
     pub rollover_opt: Option<bool>,
 }
 
+/// Creates new envelope instances or re-enables/updates soft-deleted ones based on the provided arguments.
+///
+/// This function handles the creation of shared envelopes or pairs of individual envelopes
+/// for the two configured users (`config_user_id_1`, `config_user_id_2`).
+///
+/// - If `envelope_data.is_individual_cmd_opt` is `Some(true)` or `None` and implied true:
+///   It will attempt to manage an individual envelope instance for `config_user_id_1` AND `config_user_id_2`
+///   based on `envelope_data.name`.
+/// - If `envelope_data.is_individual_cmd_opt` is `Some(false)`:
+///   It will attempt to manage a shared envelope instance based on `envelope_data.name`.
+///
+/// For each instance being managed (shared, or individual for user1, or individual for user2):
+///   - If an active envelope already exists with the same name (and user_id for individual), it's skipped.
+///   - If a soft-deleted envelope exists, it's re-enabled.
+///     - Its `category`, `allocation`, and `rollover` status are updated from `envelope_data` if provided,
+///       otherwise old values are kept.
+///     - Its `balance` is reset to the effective (new or old) `allocation`.
+///     - The `is_individual` status cannot be changed upon re-enablement; it's fixed from the DB.
+///   - If no existing envelope (active or soft-deleted) is found, a new one is created.
+///     - `category`, `allocation`, `is_individual` (from `envelope_data.is_individual_cmd_opt`),
+///       and `rollover` are taken from `envelope_data`, with defaults if not provided.
+///     - `balance` is set to the `allocation`.
+///
+/// All operations are performed within a single database transaction.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `envelope_data`: A `CreateUpdateEnvelopeArgs` struct containing the desired attributes for the envelope(s).
+/// * `config_user_id_1`: The Discord User ID of the first configured user.
+/// * `config_user_id_2`: The Discord User ID of the second configured user.
+///
+/// # Returns
+///
+/// Returns `Ok(Vec<String>)` containing messages describing the outcome for each instance
+/// (e.g., "Created new...", "Re-enabled and updated...", "ACTIVE envelope... already exists.").
+///
+/// # Errors
+///
+/// Returns `Error::Database` if the database lock cannot be acquired, the transaction fails,
+/// or any SQL operation fails.
+/// Returns `Error::Command` if there's an inconsistency, e.g., trying to change the
+/// `is_individual` status of a soft-deleted envelope upon re-enablement.
 #[instrument(skip(pool, envelope_data, config_user_id_1, config_user_id_2))]
 pub async fn create_or_reenable_envelope_flexible(
     pool: &DbPool,
@@ -624,6 +778,15 @@ pub async fn create_or_reenable_envelope_flexible(
     Ok(results)
 }
 
+/// Fetches information (name and user_id) for all active (not soft-deleted) envelopes.
+///
+/// This is typically used for populating caches for features like autocomplete.
+/// Results are ordered by name and then by user_id.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping the query results.
 #[instrument(skip(pool))]
 pub async fn get_all_unique_active_envelope_names(
     pool: &DbPool,
@@ -648,6 +811,29 @@ pub async fn get_all_unique_active_envelope_names(
     Ok(infos)
 }
 
+/// Suggests accessible envelope names based on a partial input string for autocomplete purposes.
+///
+/// Searches for active (not soft-deleted) envelopes where:
+/// - The envelope name (case-insensitive) contains the `partial_name`.
+/// - The envelope is either shared (user_id IS NULL) or is an individual envelope
+///   belonging to the specified `user_id`.
+///
+/// Results are ordered alphabetically and limited to 25 suggestions.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `user_id`: The Discord User ID of the user requesting suggestions.
+/// * `partial_name`: The partial string to match against envelope names.
+///
+/// # Returns
+///
+/// Returns `Ok(Vec<String>)` containing a list of matching envelope names.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping query results.
 #[instrument(skip(pool))]
 pub async fn suggest_accessible_envelope_names(
     pool: &DbPool,

@@ -4,6 +4,27 @@ use chrono::{NaiveDate, Utc};
 use rusqlite::params;
 use tracing::{debug, info, instrument};
 
+/// Creates a new transaction record in the database.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `envelope_id`: The ID of the envelope this transaction is associated with.
+/// * `amount`: The monetary value of the transaction. Conventionally positive,
+///             with `transaction_type` indicating direction (e.g., 'spend' implies debit).
+/// * `description`: A textual description of the transaction.
+/// * `spender_user_id`: The Discord User ID of the user who initiated the transaction.
+/// * `discord_message_id`: An optional Discord message/interaction ID for reference.
+/// * `transaction_type`: The type of transaction (e.g., "spend", "deposit", "adjustment").
+///
+/// # Returns
+///
+/// Returns `Ok(i64)` with the ID of the newly inserted transaction upon success.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock
+/// or executing the insert statement.
 #[instrument(skip(pool, description))]
 pub async fn create_transaction(
     pool: &DbPool,
@@ -39,6 +60,24 @@ pub async fn create_transaction(
     Ok(transaction_id)
 }
 
+/// Deletes transactions from the database that are older than a given cutoff date.
+///
+/// The comparison is done on the date part of the transaction's timestamp.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `cutoff_date`: A `NaiveDate` representing the cutoff. Transactions recorded
+///                  strictly before this date will be pruned.
+///
+/// # Returns
+///
+/// Returns `Ok(usize)` with the number of transactions deleted.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock
+/// or executing the delete statement.
 #[instrument(skip(pool))]
 pub async fn prune_old_transactions(pool: &DbPool, cutoff_date: NaiveDate) -> Result<usize> {
     let conn = pool
@@ -63,6 +102,26 @@ pub async fn prune_old_transactions(pool: &DbPool, cutoff_date: NaiveDate) -> Re
     Ok(rows_deleted)
 }
 
+/// Calculates the total amount spent from a specific envelope within a given month and year.
+///
+/// This sum only includes transactions of type 'spend'.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `envelope_id`: The ID of the envelope to query.
+/// * `year`: The year of the desired month.
+/// * `month`: The month (1-12) of the desired period.
+///
+/// # Returns
+///
+/// Returns `Ok(f64)` with the total sum of 'spend' transaction amounts for the
+/// specified envelope and month. Returns 0.0 if no such transactions exist.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or executing the query.
 #[instrument(skip(pool))]
 pub async fn get_actual_spending_this_month(
     pool: &DbPool,
@@ -86,6 +145,112 @@ pub async fn get_actual_spending_this_month(
         envelope_id, month_str, total_spent
     );
     Ok(total_spent)
+}
+
+/// Atomically processes a spend transaction against a specified envelope.
+///
+/// This function ensures that both the envelope's balance is updated (debited)
+/// and a corresponding transaction record of type 'spend' is created as a single,
+/// indivisible operation. If any part of this process fails, the entire operation
+/// is rolled back, leaving the database in its state prior to the call.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `envelope_id`: The ID of the envelope from which funds will be spent.
+/// * `original_balance`: The current balance of the envelope *before* this spend.
+///   This is used to calculate the new balance.
+/// * `spend_amount`: The amount to be debited from the envelope. This must be a positive value.
+/// * `description`: A textual description of the spend transaction.
+/// * `spender_user_id`: The Discord User ID of the user initiating the spend.
+/// * `discord_message_id`: An optional Discord message or interaction ID to associate
+///   with the transaction for reference.
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the spend operation (balance update and transaction creation)
+/// is completed successfully and committed to the database.
+///
+/// # Errors
+///
+/// This function can return an error in the following cases:
+/// * `Error::Command`: If `spend_amount` is not positive.
+/// * `Error::Database`:
+///     - If the database lock cannot be acquired.
+///     - If starting the database transaction fails.
+///     - If updating the envelope's balance fails within the transaction.
+///     - If creating the transaction record fails within the transaction.
+///     - If committing the transaction fails.
+#[instrument(skip(pool, description))]
+pub async fn execute_spend_transaction(
+    pool: &DbPool,
+    envelope_id: i64,
+    original_balance: f64,
+    spend_amount: f64,
+    description: &str,
+    spender_user_id: &str,
+    discord_message_id: Option<&str>,
+) -> Result<()> {
+    if spend_amount <= 0.0 {
+        return Err(Error::Command("Spend amount must be positive.".to_string()));
+    }
+
+    let mut conn = pool.lock().map_err(|_| {
+        Error::Database("Failed to acquire DB lock for spend transaction".to_string())
+    })?;
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| Error::Database(format!("Failed to start transaction for spend: {}", e)))?;
+
+    let new_balance = original_balance - spend_amount;
+    // Optional: Add overdraft check here if it should prevent the transaction
+    // if new_balance < 0.0 && !config.allow_overdraft { // Assuming a config for overdraft allowance
+    //     return Err(Error::Command(format!(
+    //         "Spending ${:.2} would overdraft envelope (ID: {}). Balance: ${:.2}, Tried to spend: ${:.2}",
+    //         spend_amount, envelope_id, original_balance, spend_amount
+    //     )));
+    // }
+
+    // 1. Update balance
+    tx.execute(
+        "UPDATE envelopes SET balance = ?1 WHERE id = ?2",
+        params![new_balance, envelope_id],
+    )
+    .map_err(|e| {
+        Error::Database(format!(
+            "Failed to update envelope balance (ID: {}) in transaction: {}",
+            envelope_id, e
+        ))
+    })?;
+
+    // 2. Create transaction record
+    let current_timestamp = chrono::Utc::now();
+    tx.execute(
+        "INSERT INTO transactions (envelope_id, amount, description, timestamp, user_id, message_id, transaction_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'spend')",
+        params![
+            envelope_id,
+            spend_amount, // Store the positive spending amount
+            description,
+            current_timestamp,
+            spender_user_id,
+            discord_message_id,
+        ],
+    ).map_err(|e| Error::Database(format!("Failed to create transaction record for envelope (ID: {}) in transaction: {}", envelope_id, e)))?;
+
+    tx.commit().map_err(|e| {
+        Error::Database(format!(
+            "Failed to commit spend transaction for envelope (ID: {}): {}",
+            envelope_id, e
+        ))
+    })?;
+
+    info!(
+        "Successfully executed spend transaction for envelope_id {}: amount=${:.2}, new_balance=${:.2}",
+        envelope_id, spend_amount, new_balance
+    );
+    Ok(())
 }
 
 #[cfg(test)]

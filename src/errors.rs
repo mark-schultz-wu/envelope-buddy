@@ -23,7 +23,13 @@ pub enum Error {
 
     #[error("Serenity/Poise framework error: {0}")]
     #[allow(clippy::enum_variant_names)]
-    FrameworkError(#[from] poise::serenity_prelude::Error),
+    FrameworkError(Box<poise::serenity_prelude::Error>),
+}
+
+impl From<poise::serenity_prelude::Error> for Error {
+    fn from(value: poise::serenity_prelude::Error) -> Self {
+        Error::FrameworkError(Box::new(value))
+    }
 }
 
 // Convenience `Result` type

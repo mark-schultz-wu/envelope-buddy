@@ -4,6 +4,28 @@ use crate::models::Product;
 use rusqlite::{OptionalExtension, params};
 use tracing::{debug, info, instrument, trace};
 
+/// Adds a new product to the database.
+///
+/// The product name must be unique.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `name`: The unique name of the product.
+/// * `price`: The unit price of the product. Must be non-negative.
+/// * `envelope_id`: The ID of the envelope this product is linked to.
+/// * `description`: An optional description for the product.
+///
+/// # Returns
+///
+/// Returns `Ok(i64)` with the ID of the newly inserted product upon success.
+///
+/// # Errors
+///
+/// Returns `Error::Command` if the `price` is negative.
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// if the product name constraint is violated (e.g. duplicate name),
+/// or if there's any other issue executing the insert statement.
 #[instrument(skip(pool, description))]
 pub async fn add_product(
     pool: &DbPool,
@@ -32,6 +54,25 @@ pub async fn add_product(
     Ok(product_id)
 }
 
+/// Fetches a product by its unique name.
+///
+/// The query also joins with the `envelopes` table to include the name
+/// of the envelope the product is linked to.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `name`: The name of the product to fetch.
+///
+/// # Returns
+///
+/// Returns `Ok(Some(Product))` if a product with the given name is found.
+/// Returns `Ok(None)` if no product with that name exists.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping the query result.
 #[instrument(skip(pool))]
 pub async fn get_product_by_name(pool: &DbPool, name: &str) -> Result<Option<Product>> {
     let conn = pool
@@ -65,6 +106,25 @@ pub async fn get_product_by_name(pool: &DbPool, name: &str) -> Result<Option<Pro
     Ok(product_result)
 }
 
+/// Fetches a product by its unique ID.
+///
+/// The query also joins with the `envelopes` table to include the name
+/// of the envelope the product is linked to.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `product_id`: The ID of the product to fetch.
+///
+/// # Returns
+///
+/// Returns `Ok(Some(Product))` if a product with the given ID is found.
+/// Returns `Ok(None)` if no product with that ID exists.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping the query result.
 #[instrument(skip(pool))]
 pub async fn get_product_by_id(pool: &DbPool, product_id: i64) -> Result<Option<Product>> {
     let conn = pool
@@ -91,6 +151,15 @@ pub async fn get_product_by_id(pool: &DbPool, product_id: i64) -> Result<Option<
     Ok(product_result)
 }
 
+/// Lists all products currently defined in the database.
+///
+/// For each product, it also fetches the name of the envelope it's linked to.
+/// Products are ordered alphabetically by name.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping query results.
 #[instrument(skip(pool))]
 pub async fn list_all_products(pool: &DbPool) -> Result<Vec<Product>> {
     let conn = pool
@@ -124,6 +193,24 @@ pub async fn list_all_products(pool: &DbPool) -> Result<Vec<Product>> {
     Ok(products)
 }
 
+/// Updates the unit price of an existing product.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `product_id`: The ID of the product to update.
+/// * `new_price`: The new unit price to set. Must be non-negative.
+///
+/// # Returns
+///
+/// Returns `Ok(usize)` with the number of rows affected (should be 1 if the product
+/// exists and was updated, or 0 if the product ID was not found).
+///
+/// # Errors
+///
+/// Returns `Error::Command` if `new_price` is negative.
+/// Returns `Error::Database` if there's an issue acquiring the database lock
+/// or executing the update statement.
 #[instrument(skip(pool))]
 pub async fn update_product_price(pool: &DbPool, product_id: i64, new_price: f64) -> Result<usize> {
     if new_price < 0.0 {
@@ -145,6 +232,22 @@ pub async fn update_product_price(pool: &DbPool, product_id: i64, new_price: f64
     Ok(rows_affected)
 }
 
+/// Deletes a product from the database by its unique name.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `name`: The name of the product to delete.
+///
+/// # Returns
+///
+/// Returns `Ok(usize)` with the number of rows affected (should be 1 if the product
+/// was found and deleted, or 0 if no product with that name was found).
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock
+/// or executing the delete statement.
 #[instrument(skip(pool))]
 pub async fn delete_product_by_name(pool: &DbPool, name: &str) -> Result<usize> {
     let conn = pool
@@ -158,6 +261,14 @@ pub async fn delete_product_by_name(pool: &DbPool, name: &str) -> Result<usize> 
     Ok(rows_affected)
 }
 
+/// Fetches all unique product names from the database, ordered alphabetically.
+///
+/// This is typically used for populating caches for features like autocomplete.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping query results.
 #[instrument(skip(pool))]
 pub async fn get_all_product_names(pool: &DbPool) -> Result<Vec<String>> {
     let conn = pool.lock().map_err(|_| {
@@ -180,6 +291,25 @@ pub async fn get_all_product_names(pool: &DbPool) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// Suggests product names based on a partial input string for autocomplete purposes.
+///
+/// Searches for product names where the name (case-insensitive) starts with the
+/// `partial_name` (LIKE 'partial%').
+/// Results are ordered alphabetically and limited to 25 suggestions.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `partial_name`: The partial string to match against product names.
+///
+/// # Returns
+///
+/// Returns `Ok(Vec<String>)` containing a list of matching product names.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping query results.
 #[instrument(skip(pool))]
 pub async fn suggest_product_names(pool: &DbPool, partial_name: &str) -> Result<Vec<String>> {
     let conn = pool

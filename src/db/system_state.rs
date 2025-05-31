@@ -3,6 +3,25 @@ use crate::errors::{Error, Result};
 use rusqlite::{OptionalExtension, params};
 use tracing::{debug, info, instrument};
 
+/// Retrieves a value from the key-value `system_state` table.
+///
+/// This table is used for storing persistent system-wide settings or state,
+/// such as the last processed month for updates.
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `key`: The key whose value is to be retrieved.
+///
+/// # Returns
+///
+/// Returns `Ok(Some(String))` if the key exists and a value is found.
+/// Returns `Ok(None)` if the key does not exist in the table.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock,
+/// preparing the SQL statement, or mapping the query result.
 #[instrument(skip(pool))]
 pub async fn get_system_state_value(pool: &DbPool, key: &str) -> Result<Option<String>> {
     let conn = pool
@@ -14,6 +33,21 @@ pub async fn get_system_state_value(pool: &DbPool, key: &str) -> Result<Option<S
     Ok(value_result)
 }
 
+/// Sets or updates a value in the key-value `system_state` table.
+///
+/// If the key already exists, its value is updated. If the key does not exist,
+/// a new key-value pair is inserted (UPSERT behavior).
+///
+/// # Parameters
+///
+/// * `pool`: The database connection pool.
+/// * `key`: The key to set or update.
+/// * `value`: The value to associate with the key.
+///
+/// # Errors
+///
+/// Returns `Error::Database` if there's an issue acquiring the database lock
+/// or executing the insert/update statement.
 #[instrument(skip(pool))]
 pub async fn set_system_state_value(pool: &DbPool, key: &str, value: &str) -> Result<()> {
     let conn = pool
