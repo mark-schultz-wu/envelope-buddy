@@ -162,44 +162,27 @@ pub async fn update(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Soft-deletes an envelope. The envelope can be re-enabled by trying to create it again.
-#[poise::command(slash_command)]
+#[poise::command(
+    slash_command,
+    subcommands("create_envelope", "delete_envelope"), // Add "edit_envelope", "set_balance_envelope" here in the future
+    rename = "envelope"
+)]
 #[instrument(skip(ctx))]
-pub async fn delete_envelope(
-    ctx: Context<'_>,
-    #[description = "Name of the envelope to delete"] name: String,
-) -> Result<(), Error> {
-    let author_id_str = ctx.author().id.to_string();
-    info!(
-        "Delete_envelope command received from user: {} ({}) for envelope: '{}'",
-        ctx.author().name,
-        author_id_str,
-        name
-    );
-
-    let db_pool = &ctx.data().db_pool;
-
-    match db::soft_delete_envelope(db_pool, &name, &author_id_str).await? {
-        true => {
-            ctx.say(format!("Envelope '{}' has been soft-deleted. You can re-enable it by trying to create it again with the same name.", name)).await?;
-            info!(
-                "Successfully soft-deleted envelope '{}' for user {}",
-                name, author_id_str
-            );
-        }
-        false => {
-            ctx.say(format!("Could not find an active envelope named '{}' that you own or is shared, or it was already deleted.", name)).await?;
-            info!(
-                "Failed to soft-delete envelope '{}' for user {} (not found or permission issue).",
-                name, author_id_str
-            );
-        }
-    }
+pub async fn envelope_manage(ctx: Context<'_>) -> Result<(), Error> {
+    let help_text = "Envelope management subcommands: `create`, `delete`.\n\
+                     (Soon: `edit`, `set_balance`)\n\
+                     Example: `/manage envelope create name:\"New Budget\" ...`";
+    ctx.send(
+        poise::CreateReply::default()
+            .content(help_text)
+            .ephemeral(true),
+    )
+    .await?;
     Ok(())
 }
 
 /// Creates a new envelope or re-enables/updates a soft-deleted one.
-#[poise::command(slash_command)]
+#[poise::command(slash_command, rename = "create")]
 #[instrument(skip(ctx))]
 pub async fn create_envelope(
     ctx: Context<'_>,
@@ -271,7 +254,41 @@ pub async fn create_envelope(
     Ok(())
 }
 
+/// Soft-deletes an envelope. The envelope can be re-enabled by trying to create it again.
+#[poise::command(slash_command)]
+#[instrument(skip(ctx))]
+pub async fn delete_envelope(
+    ctx: Context<'_>,
+    #[description = "Name of the envelope to delete"] name: String,
+) -> Result<(), Error> {
+    let author_id_str = ctx.author().id.to_string();
+    info!(
+        "Delete_envelope command received from user: {} ({}) for envelope: '{}'",
+        ctx.author().name,
+        author_id_str,
+        name
+    );
 
+    let db_pool = &ctx.data().db_pool;
+
+    match db::soft_delete_envelope(db_pool, &name, &author_id_str).await? {
+        true => {
+            ctx.say(format!("Envelope '{}' has been soft-deleted. You can re-enable it by trying to create it again with the same name.", name)).await?;
+            info!(
+                "Successfully soft-deleted envelope '{}' for user {}",
+                name, author_id_str
+            );
+        }
+        false => {
+            ctx.say(format!("Could not find an active envelope named '{}' that you own or is shared, or it was already deleted.", name)).await?;
+            info!(
+                "Failed to soft-delete envelope '{}' for user {} (not found or permission issue).",
+                name, author_id_str
+            );
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

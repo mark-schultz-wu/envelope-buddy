@@ -54,9 +54,8 @@ pub async fn run_bot(
                 commands::spend(),
                 commands::addfunds(),
                 commands::update(),
-                commands::delete_envelope(),
-                commands::create_envelope(),
-                commands::product::product(),
+                commands::product_use(),
+                commands::manage(),
             ],
             on_error: |error| Box::pin(on_error(error)),
             ..Default::default()

@@ -8,26 +8,21 @@ use crate::{Error, Result, db};
 use poise::serenity_prelude as serenity;
 use tracing::{error, info, instrument, warn};
 
-/// Parent command for managing and using predefined, fixed-price products.
+/// Parent command for managing predefined, fixed-price products.
 ///
 /// Products allow for quick logging of expenses by linking a named item to a
 /// specific envelope and unit price. This command groups subcommands for adding,
-/// listing, updating, using (consuming), and deleting products.
+/// listing, updating, and deleting products.
 ///
 /// Running this command by itself displays help text for its subcommands.
 ///
 /// TODO: Think about unified way to handle help text for all commands
 #[poise::command(
     slash_command,
-    subcommands(
-        "product_add",
-        "product_list",
-        "product_update",
-        "product_use",
-        "product_delete"
-    )
+    rename = "product",
+    subcommands("product_add", "product_list", "product_update", "product_delete")
 )]
-pub async fn product(ctx: Context<'_>) -> Result<()> {
+pub async fn product_manage(ctx: Context<'_>) -> Result<()> {
     let help_text = "Product management command. Available subcommands:\n\
         `/product add name:<name> total_price:<price> envelope:<envelope_name> [quantity:<num>] [description:<text>]`\n\
         > Defines a new product. The unit price is calculated from `total_price` and `quantity` (quantity defaults to 1 if omitted).\n\
@@ -35,8 +30,8 @@ pub async fn product(ctx: Context<'_>) -> Result<()> {
         > Displays all defined products, their prices, and linked envelopes.\n\
         `/product update name:<name> total_price:<price> [quantity:<num>]`\n\
         > Updates an existing product's unit price using the given `total_price` and `quantity` (quantity defaults to 1 if omitted).\n\
-        `/product consume name:<name> [quantity:<num>]`\n\
-        > Records an expense by consuming a specified quantity of a predefined product (quantity defaults to 1).";
+        `/product consume name:<name> [quantity:<num>]`.";
+
     ctx.say(help_text).await?;
     Ok(())
 }
@@ -265,7 +260,7 @@ pub async fn product_list(ctx: Context<'_>) -> Result<()> {
 /// Returns `Error::Database` for issues during database operations (fetching product/envelope,
 /// updating balance, creating transaction).
 /// Returns `Error::FrameworkError` if sending the Discord reply fails.
-#[poise::command(slash_command, rename = "use")]
+#[poise::command(slash_command, rename = "product")]
 #[instrument(skip(ctx))]
 pub async fn product_use(
     // Function name can be different from command name with `rename`
