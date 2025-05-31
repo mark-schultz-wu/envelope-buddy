@@ -2,46 +2,11 @@ use std::sync::Arc;
 
 use crate::bot::Context;
 use crate::commands::utils::envelope_name_autocomplete;
+use crate::commands::utils::product_name_autocomplete;
 use crate::models::Envelope;
 use crate::{Error, Result, db};
 use poise::serenity_prelude as serenity;
-use poise::serenity_prelude::AutocompleteChoice;
-use tracing::{error, info, instrument, trace, warn};
-
-/// Provides autocomplete suggestions for product names based on partial user input.
-///
-/// This function queries an in-memory cache of product names.
-/// It performs a case-insensitive "contains" search and returns up to 25 matching choices.
-///
-/// # Parameters
-///
-/// * `ctx`: The command context, used to access shared data like the product names cache.
-/// * `partial`: The partial string input by the user for the product name.
-///
-/// # Returns
-///
-/// A `Vec<AutocompleteChoice>` containing product names that match the partial input.
-async fn product_name_autocomplete(ctx: Context<'_>, partial: &str) -> Vec<AutocompleteChoice> {
-    trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request for product_name");
-    let _db_pool = &ctx.data().db_pool;
-
-    let data = ctx.data();
-    let product_names_cache_guard = data.product_names_cache.read().await;
-
-    let partial_lower = partial.to_lowercase();
-
-    let choices: Vec<AutocompleteChoice> = product_names_cache_guard
-        .iter()
-        .filter(|name| name.to_lowercase().contains(&partial_lower)) // Case-insensitive 'contains' search
-        .take(25) // Discord's limit for choices
-        .map(|name_str| AutocompleteChoice::new(name_str.clone(), name_str.clone())) // Name and value are the same
-        .collect();
-    trace!(
-        num_choices = choices.len(),
-        "Returning product choices from cache"
-    );
-    choices
-}
+use tracing::{error, info, instrument, warn};
 
 /// Parent command for managing and using predefined, fixed-price products.
 ///

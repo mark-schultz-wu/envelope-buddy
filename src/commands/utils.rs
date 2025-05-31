@@ -6,7 +6,8 @@ use chrono::{Datelike, Local, NaiveDate};
 use poise::serenity_prelude::{self, AutocompleteChoice};
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use tracing::trace;
+use std::time::Instant;
+use tracing::{debug, trace};
 
 /// Returns current date information relevant for monthly budget tracking.
 ///
@@ -145,14 +146,19 @@ pub(crate) async fn envelope_name_autocomplete(
     ctx: Context<'_>,
     partial: &str,
 ) -> Vec<AutocompleteChoice> {
-    trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request for envelope_name (from richer cache)");
+    let function_start_time = Instant::now();
 
+    trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request for envelope_name");
     let data = ctx.data();
-    let all_envelopes_cache_guard = data.envelope_names_cache.read().await; // This is Vec<CachedEnvelopeInfo>
+
+    let cache_read_start_time = Instant::now();
+    let all_envelopes_cache_guard = data.envelope_names_cache.read().await;
+    let cache_read_duration = cache_read_start_time.elapsed();
+
+    let processing_start_time = Instant::now();
     let author_id_str = ctx.author().id.to_string();
     let partial_lower = partial.to_lowercase();
 
-    // Use BTreeSet to collect unique names, it will keep them sorted alphabetically.
     let mut matching_names_sorted: BTreeSet<String> = BTreeSet::new();
 
     for cached_env in all_envelopes_cache_guard.iter() {
@@ -165,15 +171,73 @@ pub(crate) async fn envelope_name_autocomplete(
     }
 
     let choices: Vec<AutocompleteChoice> = matching_names_sorted
-        .into_iter() // Iterating BTreeSet yields items in sorted order
-        .take(25) // Take the top 25 after sorting by BTreeSet and filtering
+        .into_iter()
+        .take(25)
         .map(|name_str| AutocompleteChoice::new(name_str.clone(), name_str))
         .collect();
+    let processing_duration = processing_start_time.elapsed();
+    let total_function_duration = function_start_time.elapsed();
 
-    trace!(
+    debug!(
+        user = %ctx.author().name,
+        partial_input = partial,
         num_choices = choices.len(),
-        "Returning envelope choices from richer cache, sorted by BTreeSet"
+        total_duration_ms = total_function_duration.as_millis(),
+        cache_read_duration_ms = cache_read_duration.as_millis(),
+        processing_duration_ms = processing_duration.as_millis(),
+        "TIMING: Envelope autocomplete"
     );
+    choices
+}
+
+/// Provides autocomplete suggestions for product names based on partial user input.
+///
+/// This function queries an in-memory cache of product names.
+/// It performs a case-insensitive "contains" search and returns up to 25 matching choices.
+///
+/// # Parameters
+///
+/// * `ctx`: The command context, used to access shared data like the product names cache.
+/// * `partial`: The partial string input by the user for the product name.
+///
+/// # Returns
+///
+/// A `Vec<AutocompleteChoice>` containing product names that match the partial input.
+pub(crate) async fn product_name_autocomplete(
+    ctx: Context<'_>,
+    partial: &str,
+) -> Vec<AutocompleteChoice> {
+    let function_start_time = Instant::now();
+
+    trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request for product_name");
+    let data = ctx.data();
+
+    let cache_read_start_time = Instant::now();
+    let product_names_cache_guard = data.product_names_cache.read().await;
+    let cache_read_duration = cache_read_start_time.elapsed();
+
+    let processing_start_time = Instant::now();
+    let partial_lower = partial.to_lowercase();
+
+    let choices: Vec<AutocompleteChoice> = product_names_cache_guard
+        .iter()
+        .filter(|name| name.to_lowercase().contains(&partial_lower))
+        .take(25)
+        .map(|name_str| AutocompleteChoice::new(name_str.clone(), name_str.clone()))
+        .collect();
+    let processing_duration = processing_start_time.elapsed();
+    let total_function_duration = function_start_time.elapsed();
+
+    debug!(
+        user = %ctx.author().name,
+        partial_input = partial,
+        num_choices = choices.len(),
+        total_duration_ms = total_function_duration.as_millis(),
+        cache_read_duration_ms = cache_read_duration.as_millis(),
+        processing_duration_ms = processing_duration.as_millis(),
+        "TIMING: Product autocomplete"
+    );
+
     choices
 }
 
