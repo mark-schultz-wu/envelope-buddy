@@ -94,7 +94,6 @@ pub(crate) async fn generate_single_envelope_report_field_data(
 
     let actual_monthly_spending =
         db::get_actual_spending_this_month(db_pool, envelope.id, year, month).await?;
-    let spent_for_indicator = f64::max(0.0, envelope.allocation - envelope.balance);
     let daily_allocation = if envelope.allocation > 0.0 {
         envelope.allocation / days_in_month
     } else {
@@ -104,9 +103,9 @@ pub(crate) async fn generate_single_envelope_report_field_data(
 
     let status_emoji = if envelope.allocation <= 0.0 {
         "⚪"
-    } else if spent_for_indicator <= expected_spending_to_date * 0.90 {
+    } else if actual_monthly_spending <= expected_spending_to_date * 0.90 {
         "🟢"
-    } else if spent_for_indicator > expected_spending_to_date * 1.10 {
+    } else if actual_monthly_spending > expected_spending_to_date * 1.10 {
         "🔴"
     } else {
         "🟡"

@@ -50,11 +50,12 @@ pub async fn run_bot(
         .options(poise::FrameworkOptions {
             commands: vec![
                 commands::ping(),
+                commands::help(),
                 commands::report(),
                 commands::spend(),
                 commands::addfunds(),
                 commands::update(),
-                commands::product_use(),
+                commands::use_product(),
                 commands::manage(),
             ],
             on_error: |error| Box::pin(on_error(error)),

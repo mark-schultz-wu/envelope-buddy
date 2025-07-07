@@ -492,6 +492,7 @@ pub struct EnvelopeInstanceOptionalArgs<'a> {
 }
 
 #[instrument(skip(tx, args))]
+#[allow(clippy::needless_return)]
 fn manage_envelope_instance_in_transaction(
     tx: &rusqlite::Transaction,
     args: &EnvelopeInstanceOptionalArgs<'_>, // user_id in args determines if we are acting on a shared or specific user's individual envelope
@@ -894,6 +895,58 @@ pub async fn suggest_accessible_envelope_names(
     Ok(names)
 }
 
+/// Arguments for updating an envelope's attributes.
+#[derive(Debug, Default)]
+pub struct UpdateEnvelopeArgs<'a> {
+    pub category: Option<&'a str>,
+    pub allocation: Option<f64>,
+    pub rollover: Option<bool>,
+}
+
+/// Updates the attributes of a specific envelope.
+#[instrument(skip(pool))]
+pub async fn update_envelope_attributes(
+    pool: &DbPool,
+    envelope_id: i64,
+    args: &UpdateEnvelopeArgs<'_>,
+) -> Result<usize> {
+    if args.category.is_none() && args.allocation.is_none() && args.rollover.is_none() {
+        return Ok(0);
+    }
+
+    let mut set_clauses = Vec::new();
+    let mut params_list: Vec<&(dyn rusqlite::ToSql)> = Vec::new();
+
+    if let Some(cat) = &args.category {
+        set_clauses.push("category = ?".to_string());
+        params_list.push(cat);
+    }
+    if let Some(alloc) = &args.allocation {
+        set_clauses.push("allocation = ?".to_string());
+        params_list.push(alloc);
+    }
+    if let Some(roll) = &args.rollover {
+        set_clauses.push("rollover = ?".to_string());
+        params_list.push(roll);
+    }
+
+    let conn = pool
+        .lock()
+        .map_err(|_| Error::Database("Failed to acquire DB lock".to_string()))?;
+    let sql = format!(
+        "UPDATE envelopes SET {} WHERE id = ?",
+        set_clauses.join(", ")
+    );
+    params_list.push(&envelope_id);
+    let rows_affected = conn.execute(&sql, rusqlite::params_from_iter(params_list))?;
+
+    info!(
+        "Updated attributes for envelope_id {}: rows_affected = {}",
+        envelope_id, rows_affected
+    );
+    Ok(rows_affected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,6 +957,7 @@ mod tests {
     use crate::db::test_utils::{
         direct_insert_envelope, get_envelope_by_id_for_test, init_test_tracing, setup_test_db,
     };
+    use chrono::Local;
 
     #[tokio::test]
     async fn test_seed_envelopes_and_get_all_active() -> Result<()> {
@@ -1507,6 +1561,120 @@ mod tests {
         let pool = setup_test_db().await?;
         let names = get_all_unique_active_envelope_names(&pool).await?;
         assert!(names.is_empty(), "Should return empty vec for no envelopes");
+        Ok(())
+    }
+    #[tokio::test]
+    async fn test_update_envelope_attributes() -> Result<()> {
+        init_test_tracing();
+        let pool = setup_test_db().await?;
+        let env_id;
+        {
+            let conn = pool.lock().unwrap();
+            env_id = direct_insert_envelope(&DirectInsertArgs {
+                conn: &conn,
+                name: "ToUpdate",
+                category: "old_cat",
+                allocation: 100.0,
+                balance: 100.0,
+                is_individual: false,
+                user_id: None,
+                rollover: false,
+                is_deleted: false,
+            })?;
+        }
+
+        let update_args = UpdateEnvelopeArgs {
+            category: Some("new_cat"),
+            allocation: Some(250.50),
+            rollover: Some(true),
+        };
+
+        let rows_affected = update_envelope_attributes(&pool, env_id, &update_args).await?;
+        assert_eq!(rows_affected, 1);
+
+        let updated_env = get_envelope_by_id(&pool, env_id)
+            .await?
+            .expect("Envelope not found after update");
+        assert_eq!(updated_env.category, "new_cat");
+        assert_eq!(updated_env.allocation, 250.50);
+        assert!(updated_env.rollover);
+        Ok(())
+    }
+    #[tokio::test]
+    async fn test_report_field_data_with_rollover() -> Result<()> {
+        init_test_tracing();
+        let db_pool = crate::commands::tests::setup_test_db_for_commands().await?;
+        let app_config = Arc::new(AppConfig {
+            envelopes_from_toml: vec![],
+            user_id_1: "user1".to_string(),
+            user_id_2: "user2".to_string(),
+            user_nickname_1: "UserOne".to_string(),
+            user_nickname_2: "UserTwo".to_string(),
+            database_path: String::new(),
+        });
+
+        // Create the envelope in the database first to get a valid ID
+        let envelope_id;
+        {
+            let conn = db_pool.lock().unwrap();
+            envelope_id = direct_insert_envelope(&DirectInsertArgs {
+                conn: &conn,
+                name: "Savings",
+                category: "Rollover",
+                allocation: 100.0,
+                balance: 250.0, // Balance is higher due to rollover
+                is_individual: false,
+                user_id: None,
+                rollover: true,
+                is_deleted: false,
+            })?;
+        }
+
+        // Now create the struct to pass to the function under test
+        let test_envelope = Envelope {
+            id: envelope_id,
+            name: "Savings".to_string(),
+            category: "Rollover".to_string(),
+            allocation: 100.0,
+            balance: 250.0,
+            is_individual: false,
+            user_id: None,
+            rollover: true,
+            is_deleted: false,
+        };
+
+        // Log a single $20 spend transaction for the current month
+        crate::db::create_transaction(
+            &db_pool,
+            test_envelope.id, // Use the real ID from the database
+            20.0,
+            "test spend",
+            "test_user",
+            None,
+            "spend",
+        )
+        .await?;
+
+        let (_now_local_date, _current_day_of_month, _days_in_month, year, month) =
+            crate::commands::utils::get_current_month_date_info();
+
+        // The old buggy logic `(alloc - bal)` would be `100 - 250 = -150`, resulting in 0 spent.
+        // The new logic correctly uses the actual $20 transaction.
+        // Let's assume it's early in the month, so $20 spent is ahead of pace.
+        let (_field_name, field_value) =
+            crate::commands::utils::generate_single_envelope_report_field_data(
+                &test_envelope,
+                &app_config,
+                &db_pool,
+                3.0, // Assume it's day 3 of a 30 day month
+                30.0,
+                year,
+                month,
+            )
+            .await?;
+
+        assert!(field_value.contains("Spent (Actual): $20.00"));
+        assert!(field_value.contains("Status: 🔴")); // Spending $20 by day 3 is ahead of a $10 pace.
         Ok(())
     }
 }

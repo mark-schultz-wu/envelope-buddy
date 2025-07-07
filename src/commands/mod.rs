@@ -1,4 +1,4 @@
-mod envelope;
+pub mod envelope;
 mod general;
 pub mod manage;
 pub mod product;
@@ -8,6 +8,6 @@ pub mod utils;
 pub use envelope::*;
 pub use general::*;
 pub use manage::manage;
-pub use product::product_use;
+pub use product::use_product;
 pub use transaction::*;
 // pub use utils::*;

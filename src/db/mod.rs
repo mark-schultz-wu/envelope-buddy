@@ -8,9 +8,10 @@ pub mod transactions;
 
 pub use connection::{DbPool, init_db};
 pub use envelopes::{
-    CreateUpdateEnvelopeArgs, create_or_reenable_envelope_flexible, get_all_active_envelopes,
-    get_all_unique_active_envelope_names, get_envelope_by_id, get_user_or_shared_envelope,
-    seed_initial_envelopes, soft_delete_envelope, update_envelope_balance,
+    CreateUpdateEnvelopeArgs, UpdateEnvelopeArgs, create_or_reenable_envelope_flexible,
+    get_all_active_envelopes, get_all_unique_active_envelope_names, get_envelope_by_id,
+    get_user_or_shared_envelope, seed_initial_envelopes, soft_delete_envelope,
+    update_envelope_attributes, update_envelope_balance,
 };
 #[allow(unused_imports)]
 pub use products::{

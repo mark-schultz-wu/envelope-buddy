@@ -1,6 +1,7 @@
 use crate::bot::{Context, Error};
 use crate::commands::utils::{
-    generate_single_envelope_report_field_data, get_current_month_date_info,
+    envelope_name_autocomplete, generate_single_envelope_report_field_data,
+    get_current_month_date_info,
 };
 use crate::db::{self, CreateUpdateEnvelopeArgs};
 use chrono::{Datelike, Duration, Local, NaiveDate};
@@ -164,7 +165,7 @@ pub async fn update(ctx: Context<'_>) -> Result<(), Error> {
 
 #[poise::command(
     slash_command,
-    subcommands("create_envelope", "delete_envelope"), // Add "edit_envelope", "set_balance_envelope" here in the future
+    subcommands("create_envelope", "delete_envelope", "list_envelopes", "edit_envelope"), // Add "edit_envelope", "set_balance_envelope" here in the future
     rename = "envelope"
 )]
 #[instrument(skip(ctx))]
@@ -290,8 +291,144 @@ pub async fn delete_envelope(
     Ok(())
 }
 
+/// Lists all active envelopes, grouped by owner.
+#[poise::command(slash_command, rename = "list")]
+#[instrument(skip(ctx))]
+pub async fn list_envelopes(ctx: Context<'_>) -> Result<(), Error> {
+    info!(
+        "List envelopes command received from user: {}",
+        ctx.author().name
+    );
+    let data = ctx.data();
+    let db_pool = &data.db_pool;
+    let app_config = &data.app_config;
+
+    let envelopes = db::get_all_active_envelopes(db_pool).await?;
+    if envelopes.is_empty() {
+        ctx.say("No active envelopes found. Use `/manage envelope create` to add one.")
+            .await?;
+        return Ok(());
+    }
+
+    let mut shared_envelopes = String::new();
+    let mut user1_envelopes = String::new();
+    let mut user2_envelopes = String::new();
+
+    for envelope in envelopes {
+        let line = format!("> ✉️ **{}**\n", envelope.name);
+        if envelope.is_individual {
+            if envelope.user_id.as_deref() == Some(&app_config.user_id_1) {
+                user1_envelopes.push_str(&line);
+            } else if envelope.user_id.as_deref() == Some(&app_config.user_id_2) {
+                user2_envelopes.push_str(&line);
+            }
+        } else {
+            shared_envelopes.push_str(&line);
+        }
+    }
+
+    let mut fields = Vec::new();
+    if !shared_envelopes.is_empty() {
+        fields.push(("Shared Envelopes".to_string(), shared_envelopes, false));
+    }
+    if !user1_envelopes.is_empty() {
+        fields.push((
+            format!("{}'s Envelopes", app_config.user_nickname_1),
+            user1_envelopes,
+            false,
+        ));
+    }
+    if !user2_envelopes.is_empty() {
+        fields.push((
+            format!("{}'s Envelopes", app_config.user_nickname_2),
+            user2_envelopes,
+            false,
+        ));
+    }
+
+    let embed = serenity::CreateEmbed::default()
+        .title("**Active Envelope List**")
+        .color(0x3498DB)
+        .fields(fields);
+
+    ctx.send(poise::CreateReply::default().embed(embed)).await?;
+    Ok(())
+}
+
+/// Edits the attributes of an existing envelope.
+#[poise::command(slash_command, rename = "edit")]
+#[instrument(skip(ctx))]
+pub async fn edit_envelope(
+    ctx: Context<'_>,
+    #[description = "Name of the envelope to edit"]
+    #[autocomplete = "envelope_name_autocomplete"]
+    name: String,
+    #[description = "The user who owns the envelope (for individual envelopes only)"] user: Option<
+        serenity::User,
+    >,
+    #[description = "New category for the envelope"] category: Option<String>,
+    #[description = "New monthly allocation amount"] allocation: Option<f64>,
+    #[description = "Set whether the balance should roll over monthly"] rollover: Option<bool>,
+) -> Result<(), Error> {
+    info!(
+        "Edit envelope command received from user: {}",
+        ctx.author().name
+    );
+
+    if category.is_none() && allocation.is_none() && rollover.is_none() {
+        ctx.say("You must provide at least one attribute to edit: `category`, `allocation`, or `rollover`.").await?;
+        return Ok(());
+    }
+
+    let db_pool = &ctx.data().db_pool;
+    let author_id_str = ctx.author().id.to_string();
+    let target_user_id_str = user.as_ref().map_or(author_id_str, |u| u.id.to_string());
+
+    let envelope_to_edit =
+        match db::get_user_or_shared_envelope(db_pool, &name, &target_user_id_str).await? {
+            Some(e) => e,
+            None => {
+                ctx.say(format!(
+                    "Could not find an active envelope named '{}' for the specified user.",
+                    name
+                ))
+                .await?;
+                return Ok(());
+            }
+        };
+
+    if user.is_some() && !envelope_to_edit.is_individual {
+        ctx.say(format!(
+            "Cannot specify a user for a shared envelope like '{}'.",
+            name
+        ))
+        .await?;
+        return Ok(());
+    }
+
+    let args = db::UpdateEnvelopeArgs {
+        category: category.as_deref(),
+        allocation,
+        rollover,
+    };
+    let rows_affected = db::update_envelope_attributes(db_pool, envelope_to_edit.id, &args).await?;
+
+    if rows_affected > 0 {
+        ctx.say(format!("Successfully updated envelope '{}'.", name))
+            .await?;
+    } else {
+        ctx.say(format!(
+            "Envelope '{}' was found, but no changes were made.",
+            name
+        ))
+        .await?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::AppConfig;
     use crate::db::{self, DbPool};
@@ -313,7 +450,7 @@ mod tests {
     }
 
     // You'll need your setup_test_db() helper here or from a shared location
-    async fn setup_test_db_for_commands() -> Result<DbPool> {
+    pub async fn setup_test_db_for_commands() -> Result<DbPool> {
         let conn = rusqlite::Connection::open_in_memory()?;
         db::schema::create_tables(&conn)?; // Make sure create_tables is accessible
         Ok(Arc::new(Mutex::new(conn)))

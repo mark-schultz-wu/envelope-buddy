@@ -19,7 +19,6 @@ use tracing::{error, info, instrument, warn};
 /// TODO: Think about unified way to handle help text for all commands
 #[poise::command(
     slash_command,
-    rename = "product",
     subcommands("product_add", "product_list", "product_update", "product_delete")
 )]
 pub async fn product_manage(ctx: Context<'_>) -> Result<()> {
@@ -260,9 +259,9 @@ pub async fn product_list(ctx: Context<'_>) -> Result<()> {
 /// Returns `Error::Database` for issues during database operations (fetching product/envelope,
 /// updating balance, creating transaction).
 /// Returns `Error::FrameworkError` if sending the Discord reply fails.
-#[poise::command(slash_command, rename = "product")]
+#[poise::command(slash_command, rename = "use_product")]
 #[instrument(skip(ctx))]
-pub async fn product_use(
+pub async fn use_product(
     // Function name can be different from command name with `rename`
     ctx: Context<'_>,
     #[description = "Name of the product to use"]
