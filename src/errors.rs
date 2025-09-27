@@ -1,36 +1,43 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Error, Debug)]
 pub enum Error {
-    #[error("Configuration error: {0}")]
-    Config(String),
-
     #[error("Database error: {0}")]
-    Database(String),
+    Database(#[from] Box<sea_orm::DbErr>),
 
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("Discord error: {0}")]
+    Discord(#[from] Box<serenity::Error>),
 
-    #[error("Environment variable error: {0}")]
-    EnvVar(#[from] std::env::VarError),
+    #[error("Envelope not found: {name}")]
+    EnvelopeNotFound { name: String },
 
-    #[error("Command execution error: {0}")]
-    #[allow(dead_code)]
-    Command(String),
+    #[error("Product not found: {name}")]
+    ProductNotFound { name: String },
 
-    #[error("Rusqlite error: {0}")]
-    Rusqlite(#[from] rusqlite::Error),
+    #[error("Insufficient funds: envelope has {current}, need {required}")]
+    InsufficientFunds { current: f64, required: f64 },
 
-    #[error("Serenity/Poise framework error: {0}")]
-    #[allow(clippy::enum_variant_names)]
-    FrameworkError(Box<poise::serenity_prelude::Error>),
+    #[error("Invalid amount: {amount}")]
+    InvalidAmount { amount: f64 },
+
+    #[error("User not found: {user_id}")]
+    UserNotFound { user_id: String },
+
+    #[error("Configuration error: {message}")]
+    Config { message: String },
 }
 
-impl From<poise::serenity_prelude::Error> for Error {
-    fn from(value: poise::serenity_prelude::Error) -> Self {
-        Error::FrameworkError(Box::new(value))
+// Add explicit From implementations for unboxed types
+impl From<sea_orm::DbErr> for Error {
+    fn from(err: sea_orm::DbErr) -> Self {
+        Error::Database(Box::new(err))
     }
 }
 
-// Convenience `Result` type
+impl From<serenity::Error> for Error {
+    fn from(err: serenity::Error) -> Self {
+        Error::Discord(Box::new(err))
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
