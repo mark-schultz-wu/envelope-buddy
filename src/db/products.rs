@@ -106,51 +106,6 @@ pub async fn get_product_by_name(pool: &DbPool, name: &str) -> Result<Option<Pro
     Ok(product_result)
 }
 
-/// Fetches a product by its unique ID.
-///
-/// The query also joins with the `envelopes` table to include the name
-/// of the envelope the product is linked to.
-///
-/// # Parameters
-///
-/// * `pool`: The database connection pool.
-/// * `product_id`: The ID of the product to fetch.
-///
-/// # Returns
-///
-/// Returns `Ok(Some(Product))` if a product with the given ID is found.
-/// Returns `Ok(None)` if no product with that ID exists.
-///
-/// # Errors
-///
-/// Returns `Error::Database` if there's an issue acquiring the database lock,
-/// preparing the SQL statement, or mapping the query result.
-#[instrument(skip(pool))]
-pub async fn get_product_by_id(pool: &DbPool, product_id: i64) -> Result<Option<Product>> {
-    let conn = pool
-        .lock()
-        .map_err(|_| Error::Database("Failed to acquire DB lock".to_string()))?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT p.id, p.name, p.price, p.envelope_id, p.description, e.name as envelope_name
-         FROM products p
-         JOIN envelopes e ON p.envelope_id = e.id
-         WHERE p.id = ?1",
-    )?;
-    let product_result = stmt
-        .query_row(params![product_id], |row| {
-            Ok(Product {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                price: row.get(2)?,
-                envelope_id: row.get(3)?,
-                description: row.get(4)?,
-                envelope_name: row.get(5)?,
-            })
-        })
-        .optional()?;
-    Ok(product_result)
-}
-
 /// Lists all products currently defined in the database.
 ///
 /// For each product, it also fetches the name of the envelope it's linked to.
@@ -261,36 +216,6 @@ pub async fn delete_product_by_name(pool: &DbPool, name: &str) -> Result<usize> 
     Ok(rows_affected)
 }
 
-/// Fetches all unique product names from the database, ordered alphabetically.
-///
-/// This is typically used for populating caches for features like autocomplete.
-///
-/// # Errors
-///
-/// Returns `Error::Database` if there's an issue acquiring the database lock,
-/// preparing the SQL statement, or mapping query results.
-#[instrument(skip(pool))]
-pub async fn get_all_product_names(pool: &DbPool) -> Result<Vec<String>> {
-    let conn = pool.lock().map_err(|_| {
-        Error::Database("Failed to acquire DB lock for fetching all product names".to_string())
-    })?;
-
-    let mut stmt = conn.prepare_cached("SELECT name FROM products ORDER BY name ASC")?; // Products already have a UNIQUE constraint on name
-
-    let names_iter = stmt.query_map([], |row| {
-        row.get(0) // Get the name string
-    })?;
-
-    let mut names = Vec::new();
-    for name_result in names_iter {
-        names.push(name_result.map_err(|e| {
-            Error::Database(format!("Failed to map product name row for cache: {}", e))
-        })?);
-    }
-    debug!("Fetched {} product names for cache.", names.len());
-    Ok(names)
-}
-
 /// Suggests product names based on a partial input string for autocomplete purposes.
 ///
 /// Searches for product names where the name (case-insensitive) starts with the
@@ -397,9 +322,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_product_by_id_found_and_not_found() -> Result<()> {
+    async fn test_get_product_by_name_found_and_not_found() -> Result<()> {
         init_test_tracing();
-        tracing::info!("Running test_get_product_by_id_found_and_not_found");
+        tracing::info!("Running test_get_product_by_name_found_and_not_found");
         let pool = setup_test_db().await?;
         let env_id;
         {
@@ -417,28 +342,30 @@ mod tests {
             })?;
         }
 
-        let product_id =
-            add_product(&pool, "Headphones", 79.99, env_id, Some("Noise cancelling")).await?;
+        let product_name = "Headphones";
+        let _product_id =
+            add_product(&pool, product_name, 79.99, env_id, Some("Noise cancelling")).await?;
 
         // Test found
-        let fetched_product_opt = get_product_by_id(&pool, product_id).await?;
+        let fetched_product_opt = get_product_by_name(&pool, product_name).await?;
         assert!(
             fetched_product_opt.is_some(),
-            "Product should be found by ID"
+            "Product should be found by name"
         );
         let fetched_product = fetched_product_opt.unwrap();
-        assert_eq!(fetched_product.id, product_id);
-        assert_eq!(fetched_product.name, "Headphones");
+        assert_eq!(fetched_product.name, product_name);
+        assert_eq!(fetched_product.price, 79.99);
+        assert_eq!(fetched_product.envelope_id, env_id);
         assert_eq!(
             fetched_product.envelope_name.as_deref(),
             Some("Electronics")
         );
 
         // Test not found
-        let not_found_product_opt = get_product_by_id(&pool, product_id + 999).await?;
+        let not_found_product_opt = get_product_by_name(&pool, "NonExistentProduct").await?;
         assert!(
             not_found_product_opt.is_none(),
-            "Product should not be found for a non-existent ID"
+            "Product should not be found for a non-existent name"
         );
 
         Ok(())
@@ -529,14 +456,15 @@ mod tests {
                 is_deleted: false,
             })?;
         }
-        let product_id = add_product(&pool, "Novel", 12.99, env_id, None).await?;
+        let product_name = "Novel";
+        let product_id = add_product(&pool, product_name, 12.99, env_id, None).await?;
 
         // Valid update
         let new_price = 14.50;
         let rows_affected = update_product_price(&pool, product_id, new_price).await?;
         assert_eq!(rows_affected, 1, "Should affect 1 row for valid update");
 
-        let updated_product = get_product_by_id(&pool, product_id).await?.unwrap();
+        let updated_product = get_product_by_name(&pool, product_name).await?.unwrap();
         assert_eq!(updated_product.price, new_price, "Price should be updated");
 
         // Invalid update (negative price)
@@ -552,7 +480,7 @@ mod tests {
         }
 
         // Check price hasn't changed due to failed update
-        let product_after_failed_update = get_product_by_id(&pool, product_id).await?.unwrap();
+        let product_after_failed_update = get_product_by_name(&pool, product_name).await?.unwrap();
         assert_eq!(
             product_after_failed_update.price, new_price,
             "Price should remain unchanged after failed negative update"
@@ -673,29 +601,20 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn test_get_all_product_names_for_cache_empty() -> Result<()> {
+    async fn test_concurrent_product_autocomplete() -> Result<()> {
         init_test_tracing();
         let pool = setup_test_db().await?;
-        let names = get_all_product_names(&pool).await?;
-        assert!(names.is_empty(), "Should return empty vec for no products");
-        Ok(())
-    }
 
-    #[tokio::test]
-    async fn test_get_all_product_names_for_cache_with_data() -> Result<()> {
-        init_test_tracing();
-        let pool = setup_test_db().await?;
+        // Setup test data
         let env_id;
         {
             let conn = pool.lock().unwrap();
-            // Assuming direct_insert_envelope is accessible and correctly defined.
-            // You might need to adjust this if it's in a different module.
             env_id = direct_insert_envelope(&DirectInsertArgs {
                 conn: &conn,
-                name: "DefaultEnv",
-                category: "cat",
-                allocation: 10.0,
-                balance: 10.0,
+                name: "Shared",
+                category: "necessary",
+                allocation: 100.0,
+                balance: 100.0,
                 is_individual: false,
                 user_id: None,
                 rollover: false,
@@ -703,21 +622,35 @@ mod tests {
             })?;
         }
 
-        add_product(&pool, "Milk", 2.99, env_id, None).await?;
-        add_product(&pool, "Bread", 3.50, env_id, None).await?;
-        add_product(&pool, "Apples", 4.00, env_id, None).await?;
+        add_product(&pool, "Coffee", 4.50, env_id, None).await?;
+        add_product(&pool, "Tea", 3.00, env_id, None).await?;
 
-        let names = get_all_product_names(&pool).await?;
-        assert_eq!(names.len(), 3, "Should list 3 product names");
-        // Check order (ORDER BY name ASC in the query)
-        assert_eq!(
-            names,
-            vec![
-                "Apples".to_string(),
-                "Bread".to_string(),
-                "Milk".to_string()
-            ]
+        // Simulate concurrent autocomplete requests
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let pool = pool.clone();
+                tokio::spawn(async move { suggest_product_names(&pool, "Cof").await })
+            })
+            .collect();
+
+        // All should succeed and return same results
+        for handle in handles {
+            let result = handle.await.unwrap()?;
+            assert_eq!(result, vec!["Coffee"]);
+        }
+
+        // Test concurrent different searches using tokio::join!
+        let pool1 = pool.clone();
+        let pool2 = pool.clone();
+
+        let (result1, result2) = tokio::join!(
+            suggest_product_names(&pool1, "Cof"),
+            suggest_product_names(&pool2, "Te")
         );
+
+        assert_eq!(result1?, vec!["Coffee"]);
+        assert_eq!(result2?, vec!["Tea"]);
+
         Ok(())
     }
 }

@@ -41,9 +41,3 @@ pub struct Product {
     #[serde(default)] // Handles cases where it might not be loaded from DB directly
     pub envelope_name: Option<String>,
 }
-
-#[derive(Debug, Clone)]
-pub struct CachedEnvelopeInfo {
-    pub name: String,
-    pub user_id: Option<String>, // NULL for shared, Some(id) for individual
-}

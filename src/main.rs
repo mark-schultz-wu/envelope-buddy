@@ -1,5 +1,4 @@
 mod bot;
-mod cache;
 mod commands;
 mod config;
 mod db;

@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::errors::{Error, Result};
-use crate::models::{CachedEnvelopeInfo, Envelope};
+use crate::models::Envelope;
 use rusqlite::Error as RusqliteError;
 use rusqlite::{OptionalExtension, params};
 use std::sync::Arc;
@@ -779,39 +779,6 @@ pub async fn create_or_reenable_envelope_flexible(
     Ok(results)
 }
 
-/// Fetches information (name and user_id) for all active (not soft-deleted) envelopes.
-///
-/// This is typically used for populating caches for features like autocomplete.
-/// Results are ordered by name and then by user_id.
-///
-/// # Errors
-///
-/// Returns `Error::Database` if there's an issue acquiring the database lock,
-/// preparing the SQL statement, or mapping the query results.
-#[instrument(skip(pool))]
-pub async fn get_all_unique_active_envelope_names(
-    pool: &DbPool,
-) -> Result<Vec<CachedEnvelopeInfo>> {
-    let conn = pool
-        .lock()
-        .map_err(|_| Error::Database("Failed to acquire DB lock".to_string()))?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT name, user_id FROM envelopes WHERE is_deleted = FALSE ORDER BY name ASC, user_id ASC",
-    )?;
-    let envelopes_iter = stmt.query_map([], |row| {
-        Ok(CachedEnvelopeInfo {
-            name: row.get(0)?,
-            user_id: row.get(1)?,
-        })
-    })?;
-    let mut infos = Vec::new();
-    for info_result in envelopes_iter {
-        infos.push(info_result?);
-    }
-    debug!("Fetched {} active envelope infos for cache.", infos.len());
-    Ok(infos)
-}
-
 /// Suggests accessible envelope names based on a partial input string for autocomplete purposes.
 ///
 /// Searches for active (not soft-deleted) envelopes where:
@@ -957,7 +924,6 @@ mod tests {
     use crate::db::test_utils::{
         direct_insert_envelope, get_envelope_by_id_for_test, init_test_tracing, setup_test_db,
     };
-    use chrono::Local;
 
     #[tokio::test]
     async fn test_seed_envelopes_and_get_all_active() -> Result<()> {
@@ -1553,14 +1519,6 @@ mod tests {
         let env4 = get_user_or_shared_envelope(&db_pool, "DoesNotExist", user1).await?;
         assert!(env4.is_none());
 
-        Ok(())
-    }
-    #[tokio::test]
-    async fn test_get_all_unique_active_envelope_names_empty() -> Result<()> {
-        init_test_tracing();
-        let pool = setup_test_db().await?;
-        let names = get_all_unique_active_envelope_names(&pool).await?;
-        assert!(names.is_empty(), "Should return empty vec for no envelopes");
         Ok(())
     }
     #[tokio::test]

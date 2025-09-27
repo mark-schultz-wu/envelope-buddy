@@ -150,14 +150,6 @@ pub async fn product_add(
                 envelope_to_link.name,
                 envelope_to_link.id
             );
-            if let Err(e) =
-                crate::cache::refresh_product_names_cache(db_pool, &data.product_names_cache).await
-            {
-                error!(
-                    "Failed to refresh product names cache after adding product '{}': {}",
-                    name, e
-                );
-            }
             ctx.say(format!(
                 "✅ Product '{}' added with unit price **${:.2}**{} and linked to envelope '{}'.",
                 name, unit_price, price_calculation_note, envelope_to_link.name
@@ -537,16 +529,6 @@ pub async fn product_update(
             } else {
                 String::new() // No note if quantity was 1 or defaulted to 1
             };
-            // Don't strictly have to refresh the cache here as the name stays the same
-            if let Err(e) =
-                crate::cache::refresh_product_names_cache(db_pool, &ctx.data().product_names_cache)
-                    .await
-            {
-                error!(
-                    "Failed to refresh product names cache after updating product '{}': {}",
-                    name, e
-                );
-            }
 
             info!(
                 "Price updated for product '{}' (ID: {}) to ${:.2}{}",
@@ -616,16 +598,6 @@ pub async fn product_delete(
     match db::delete_product_by_name(db_pool, &name).await {
         Ok(rows_affected) if rows_affected > 0 => {
             info!("Successfully deleted product '{}'", name);
-
-            if let Err(e) =
-                crate::cache::refresh_product_names_cache(db_pool, &data.product_names_cache).await
-            {
-                error!(
-                    "Failed to refresh product names cache after deleting product '{}': {}",
-                    name, e
-                );
-            }
-
             ctx.say(format!("✅ Product '{}' has been deleted.", name))
                 .await?;
         }
@@ -642,4 +614,80 @@ pub async fn product_delete(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::test_utils::{
+        DirectInsertArgs, direct_insert_envelope, init_test_tracing, setup_test_db,
+    };
+    use crate::db::{
+        add_product, delete_product_by_name, get_product_by_name, suggest_product_names,
+        update_product_price,
+    };
+    use crate::errors::Result;
+
+    #[tokio::test]
+    async fn test_full_product_workflow() -> Result<()> {
+        init_test_tracing();
+        let pool = setup_test_db().await?;
+
+        // 1. Create envelope
+        let env_id;
+        {
+            let conn = pool.lock().unwrap();
+            env_id = direct_insert_envelope(&DirectInsertArgs {
+                conn: &conn,
+                name: "Food",
+                category: "necessary",
+                allocation: 200.0,
+                balance: 200.0,
+                is_individual: false,
+                user_id: None,
+                rollover: false,
+                is_deleted: false,
+            })?;
+        }
+
+        // 2. Add product
+        let product_id = add_product(&pool, "Pizza", 15.99, env_id, Some("Delivery")).await?;
+        assert!(product_id > 0);
+
+        // 3. Test autocomplete finds it
+        let suggestions = suggest_product_names(&pool, "Piz").await?;
+        assert_eq!(suggestions, vec!["Pizza"]);
+
+        // 4. Verify product was created correctly
+        let product = get_product_by_name(&pool, "Pizza").await?.unwrap();
+        assert_eq!(product.name, "Pizza");
+        assert_eq!(product.price, 15.99);
+        assert_eq!(product.envelope_id, env_id);
+        assert_eq!(product.description, Some("Delivery".to_string()));
+
+        // 5. Update product price
+        let rows = update_product_price(&pool, product_id, 18.99).await?;
+        assert_eq!(rows, 1);
+
+        // 6. Verify update
+        let updated_product = get_product_by_name(&pool, "Pizza").await?.unwrap();
+        assert_eq!(updated_product.price, 18.99);
+
+        // 7. Test autocomplete still works after update
+        let suggestions_after_update = suggest_product_names(&pool, "Piz").await?;
+        assert_eq!(suggestions_after_update, vec!["Pizza"]);
+
+        // 8. Delete product
+        let deleted = delete_product_by_name(&pool, "Pizza").await?;
+        assert_eq!(deleted, 1);
+
+        // 9. Verify deletion
+        let suggestions_after_delete = suggest_product_names(&pool, "Piz").await?;
+        assert!(suggestions_after_delete.is_empty());
+
+        // 10. Verify product no longer exists
+        let deleted_product = get_product_by_name(&pool, "Pizza").await?;
+        assert!(deleted_product.is_none());
+
+        Ok(())
+    }
 }

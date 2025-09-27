@@ -1,13 +1,13 @@
 use crate::bot::{Context, Error};
 use crate::config::AppConfig;
-use crate::db::{self, DbPool};
+use crate::db::{
+    self, DbPool, envelopes::suggest_accessible_envelope_names, products::suggest_product_names,
+};
 use crate::models::Envelope;
 use chrono::{Datelike, Local, NaiveDate};
 use poise::serenity_prelude::{self, AutocompleteChoice};
-use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Instant;
-use tracing::{debug, trace};
+use tracing::{error, trace};
 
 /// Returns current date information relevant for monthly budget tracking.
 ///
@@ -125,78 +125,53 @@ pub(crate) async fn generate_single_envelope_report_field_data(
 
 /// Provides autocomplete choices for envelope names accessible to the invoking user.
 ///
-/// It searches through a cache of active envelope names (both shared and the user's
-/// own individual envelopes) that partially match the user's input.
-/// The search is case-insensitive and matches if the envelope name *contains*
-/// the partial input. Results are sorted alphabetically.
+/// This function queries the database directly for active envelope names.
+/// It performs a case-insensitive search and returns up to 25 matching choices.
 ///
 /// # Parameters
 ///
-/// * `ctx`: The command context, used to access shared data (caches, user info).
+/// * `ctx`: The command context, used to access the database.
 /// * `partial`: The partial string input by the user for the envelope name.
 ///
 /// # Returns
 ///
 /// A `Vec<AutocompleteChoice>` containing up to 25 matching envelope names.
-// This function primarily interacts with a cache and Poise context; direct errors
-// it might return (other than from framework/cache access) are less common.
-// If cache access could fail in a way that needs documenting as an error, add it.
 pub(crate) async fn envelope_name_autocomplete(
     ctx: Context<'_>,
     partial: &str,
 ) -> Vec<AutocompleteChoice> {
-    let function_start_time = Instant::now();
-
     trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request for envelope_name");
+
     let data = ctx.data();
-
-    let cache_read_start_time = Instant::now();
-    let all_envelopes_cache_guard = data.envelope_names_cache.read().await;
-    let cache_read_duration = cache_read_start_time.elapsed();
-
-    let processing_start_time = Instant::now();
     let author_id_str = ctx.author().id.to_string();
-    let partial_lower = partial.to_lowercase();
 
-    let mut matching_names_sorted: BTreeSet<String> = BTreeSet::new();
+    // Query database directly using suggest_accessible_envelope_names
+    // This replaces the previous cache-based approach for always-fresh data
+    let matching_names =
+        match suggest_accessible_envelope_names(&data.db_pool, &author_id_str, partial).await {
+            Ok(names) => names,
+            Err(e) => {
+                error!("Failed to fetch envelope names for autocomplete: {}", e);
+                return Vec::new();
+            }
+        };
 
-    for cached_env in all_envelopes_cache_guard.iter() {
-        if cached_env.name.to_lowercase().contains(&partial_lower)
-            && (cached_env.user_id.is_none()
-                || cached_env.user_id.as_deref() == Some(&author_id_str))
-        {
-            matching_names_sorted.insert(cached_env.name.clone());
-        }
-    }
-
-    let choices: Vec<AutocompleteChoice> = matching_names_sorted
+    // Convert to choices (already sorted by the DB function)
+    matching_names
         .into_iter()
         .take(25)
-        .map(|name_str| AutocompleteChoice::new(name_str.clone(), name_str))
-        .collect();
-    let processing_duration = processing_start_time.elapsed();
-    let total_function_duration = function_start_time.elapsed();
-
-    debug!(
-        user = %ctx.author().name,
-        partial_input = partial,
-        num_choices = choices.len(),
-        total_duration_ms = total_function_duration.as_millis(),
-        cache_read_duration_ms = cache_read_duration.as_millis(),
-        processing_duration_ms = processing_duration.as_millis(),
-        "TIMING: Envelope autocomplete"
-    );
-    choices
+        .map(|name| AutocompleteChoice::new(name.clone(), name))
+        .collect()
 }
 
 /// Provides autocomplete suggestions for product names based on partial user input.
 ///
-/// This function queries an in-memory cache of product names.
-/// It performs a case-insensitive "contains" search and returns up to 25 matching choices.
+/// This function queries the database directly for product names.
+/// It performs a case-insensitive search and returns up to 25 matching choices.
 ///
 /// # Parameters
 ///
-/// * `ctx`: The command context, used to access shared data like the product names cache.
+/// * `ctx`: The command context, used to access the database.
 /// * `partial`: The partial string input by the user for the product name.
 ///
 /// # Returns
@@ -206,38 +181,26 @@ pub(crate) async fn product_name_autocomplete(
     ctx: Context<'_>,
     partial: &str,
 ) -> Vec<AutocompleteChoice> {
-    let function_start_time = Instant::now();
-
     trace!(user = %ctx.author().name, partial_input = partial, "Autocomplete request for product_name");
+
     let data = ctx.data();
 
-    let cache_read_start_time = Instant::now();
-    let product_names_cache_guard = data.product_names_cache.read().await;
-    let cache_read_duration = cache_read_start_time.elapsed();
+    // Query database directly using suggest_product_names
+    // This replaces the previous cache-based approach for always-fresh data
+    let matching_names = match suggest_product_names(&data.db_pool, partial).await {
+        Ok(names) => names,
+        Err(e) => {
+            error!("Failed to fetch product names for autocomplete: {}", e);
+            return Vec::new();
+        }
+    };
 
-    let processing_start_time = Instant::now();
-    let partial_lower = partial.to_lowercase();
-
-    let choices: Vec<AutocompleteChoice> = product_names_cache_guard
-        .iter()
-        .filter(|name| name.to_lowercase().contains(&partial_lower))
+    // Convert to choices (already sorted by the DB function)
+    matching_names
+        .into_iter()
         .take(25)
-        .map(|name_str| AutocompleteChoice::new(name_str.clone(), name_str.clone()))
-        .collect();
-    let processing_duration = processing_start_time.elapsed();
-    let total_function_duration = function_start_time.elapsed();
-
-    debug!(
-        user = %ctx.author().name,
-        partial_input = partial,
-        num_choices = choices.len(),
-        total_duration_ms = total_function_duration.as_millis(),
-        cache_read_duration_ms = cache_read_duration.as_millis(),
-        processing_duration_ms = processing_duration.as_millis(),
-        "TIMING: Product autocomplete"
-    );
-
-    choices
+        .map(|name| AutocompleteChoice::new(name.clone(), name))
+        .collect()
 }
 
 /// Generates and sends a standardized mini-report embed for a single envelope.
@@ -307,6 +270,13 @@ pub(crate) async fn send_mini_report_embed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::envelopes::suggest_accessible_envelope_names;
+    use crate::db::test_utils::{
+        DirectInsertArgs, direct_insert_envelope, init_test_tracing, setup_test_db,
+    };
+    use crate::db::{add_product, suggest_product_names};
+    use crate::errors::Result;
+
     use chrono::{Datelike, NaiveDate};
 
     #[test]
@@ -348,5 +318,76 @@ mod tests {
         .unwrap()
         .day();
         assert_eq!(days_in_apr_2023, 30);
+    }
+    #[tokio::test]
+    async fn test_autocomplete_integration() -> Result<()> {
+        init_test_tracing();
+        let pool = setup_test_db().await?;
+
+        // Setup test envelope
+        let env_id;
+        {
+            let conn = pool.lock().unwrap();
+            env_id = direct_insert_envelope(&DirectInsertArgs {
+                conn: &conn,
+                name: "Groceries",
+                category: "necessary",
+                allocation: 500.0,
+                balance: 500.0,
+                is_individual: false,
+                user_id: None,
+                rollover: false,
+                is_deleted: false,
+            })?;
+        }
+
+        // Setup test products
+        add_product(&pool, "Milk", 3.99, env_id, None).await?;
+        add_product(&pool, "Bread", 2.50, env_id, None).await?;
+        add_product(&pool, "Apples", 4.00, env_id, None).await?;
+
+        // Test product autocomplete
+        let suggestions = suggest_product_names(&pool, "Mi").await?;
+        assert_eq!(suggestions, vec!["Milk"]);
+
+        let suggestions2 = suggest_product_names(&pool, "Br").await?;
+        assert_eq!(suggestions2, vec!["Bread"]);
+
+        // Test envelope autocomplete
+        let env_suggestions = suggest_accessible_envelope_names(&pool, "user123", "Gro").await?;
+        assert_eq!(env_suggestions, vec!["Groceries"]);
+
+        // Test case insensitive
+        let suggestions3 = suggest_product_names(&pool, "milk").await?;
+        assert_eq!(suggestions3, vec!["Milk"]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_autocomplete_error_handling() -> Result<()> {
+        init_test_tracing();
+        let pool = setup_test_db().await?;
+
+        // Test invalid envelope access (non-existent user)
+        let result =
+            suggest_accessible_envelope_names(&pool, "nonexistent_user", "anything").await?;
+        assert!(
+            result.is_empty(),
+            "Should return empty for non-existent user"
+        );
+
+        // Test empty partial input
+        let empty_result = suggest_product_names(&pool, "").await?;
+        assert!(
+            empty_result.is_empty(),
+            "Should handle empty input gracefully"
+        );
+
+        // Test non-existent product search
+        let no_match = suggest_product_names(&pool, "NonExistentProduct").await?;
+        assert!(no_match.is_empty(), "Should return empty for no matches");
+
+        Ok(())
     }
 }
