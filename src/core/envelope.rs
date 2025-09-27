@@ -119,30 +119,47 @@ pub async fn update_envelope_balance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+    use sea_orm::{DatabaseBackend, MockDatabase};
 
     #[tokio::test]
-    async fn test_create_envelope() -> Result<()> {
-        let now = chrono::Utc::now().naive_utc();
-        let expected_envelope = envelope::Model {
-            id: 1,
-            name: "Test Envelope".to_string(),
-            user_id: None,
-            category: "necessary".to_string(),
-            monthly_allocation: 100.0,
-            current_balance: 0.0,
-            is_deleted: false,
-            created_at: now,
-            updated_at: now,
-        };
+    async fn test_create_envelope_validation() -> Result<()> {
+        let db = MockDatabase::new(DatabaseBackend::Sqlite).into_connection();
 
-        let db = MockDatabase::new(DatabaseBackend::Sqlite)
-            .append_exec_results([MockExecResult {
-                last_insert_id: 1,
-                rows_affected: 1,
-            }])
-            .append_query_results([vec![expected_envelope]])
-            .into_connection();
+        // Test empty name validation
+        let result =
+            create_envelope(&db, "".to_string(), None, "necessary".to_string(), 100.0).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Config { message: _ }));
+
+        // Test whitespace-only name validation
+        let result =
+            create_envelope(&db, "   ".to_string(), None, "necessary".to_string(), 100.0).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Config { message: _ }));
+
+        // Test negative allocation validation
+        let result = create_envelope(
+            &db,
+            "Test".to_string(),
+            None,
+            "necessary".to_string(),
+            -50.0,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidAmount { amount: -50.0 }
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_create_envelope_integration() -> Result<()> {
+        // Use real database to test actual envelope creation
+        let db = sea_orm::Database::connect("sqlite::memory:").await?;
+        crate::config::database::create_tables(&db).await?;
 
         let envelope = create_envelope(
             &db,
@@ -156,80 +173,19 @@ mod tests {
         assert_eq!(envelope.name, "Test Envelope");
         assert_eq!(envelope.monthly_allocation, 100.0);
         assert_eq!(envelope.current_balance, 0.0);
+        assert!(!envelope.is_deleted);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_get_envelope_by_name() -> Result<()> {
-        let db = MockDatabase::new(DatabaseBackend::Sqlite)
-            .append_query_results([vec![envelope::Model {
-                id: 1,
-                name: "Test Envelope".to_string(),
-                user_id: None,
-                category: "necessary".to_string(),
-                monthly_allocation: 100.0,
-                current_balance: 0.0,
-                is_deleted: false,
-                created_at: chrono::Utc::now().naive_utc(),
-                updated_at: chrono::Utc::now().naive_utc(),
-            }]])
-            .into_connection();
+    async fn test_get_envelope_by_name_integration() -> Result<()> {
+        // Use real database to test actual query logic
+        let db = sea_orm::Database::connect("sqlite::memory:").await?;
+        crate::config::database::create_tables(&db).await?;
 
-        let envelope = get_envelope_by_name(&db, "Test Envelope").await?;
-        assert!(envelope.is_some());
-        assert_eq!(envelope.unwrap().name, "Test Envelope");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_create_envelope_validation() -> Result<()> {
-        let db = MockDatabase::new(DatabaseBackend::Sqlite).into_connection();
-
-        // Test empty name
-        let result =
-            create_envelope(&db, "".to_string(), None, "necessary".to_string(), 100.0).await;
-        assert!(result.is_err());
-
-        // Test negative allocation
-        let result = create_envelope(
-            &db,
-            "Test".to_string(),
-            None,
-            "necessary".to_string(),
-            -50.0,
-        )
-        .await;
-        assert!(result.is_err());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_create_envelope_with_mock_validation() -> Result<()> {
-        let now = chrono::Utc::now().naive_utc();
-        let expected_envelope = envelope::Model {
-            id: 1,
-            name: "Test Envelope".to_string(),
-            user_id: None,
-            category: "necessary".to_string(),
-            monthly_allocation: 100.0,
-            current_balance: 0.0,
-            is_deleted: false,
-            created_at: now,
-            updated_at: now,
-        };
-
-        let db = MockDatabase::new(DatabaseBackend::Sqlite)
-            .append_exec_results([MockExecResult {
-                last_insert_id: 1,
-                rows_affected: 1,
-            }])
-            .append_query_results([vec![expected_envelope]])
-            .into_connection();
-
-        let _envelope = create_envelope(
+        // Create an envelope
+        let created_envelope = create_envelope(
             &db,
             "Test Envelope".to_string(),
             None,
@@ -238,7 +194,190 @@ mod tests {
         )
         .await?;
 
-        // Validate that the operation was executed successfully
+        // Test finding it by name
+        let found_envelope = get_envelope_by_name(&db, "Test Envelope").await?;
+        assert!(found_envelope.is_some());
+        assert_eq!(found_envelope.unwrap().id, created_envelope.id);
+
+        // Test finding non-existent envelope
+        let not_found = get_envelope_by_name(&db, "Non-existent").await?;
+        assert!(not_found.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_all_active_envelopes_integration() -> Result<()> {
+        // Use real database to test actual query logic
+        let db = sea_orm::Database::connect("sqlite::memory:").await?;
+        crate::config::database::create_tables(&db).await?;
+
+        // Create multiple envelopes
+        let envelope0 = create_envelope(
+            &db,
+            "Envelope 0".to_string(),
+            None,
+            "necessary".to_string(),
+            100.0,
+        )
+        .await?;
+
+        let envelope1 = create_envelope(
+            &db,
+            "Envelope 1".to_string(),
+            Some("user123".to_string()),
+            "wants".to_string(),
+            200.0,
+        )
+        .await?;
+
+        // Test getting all active envelopes
+        let envelopes = get_all_active_envelopes(&db).await?;
+        assert_eq!(envelopes.len(), 2);
+
+        // Test that they're ordered alphabetically
+        assert_eq!(envelopes[0], envelope0);
+        assert_eq!(envelopes[1], envelope1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_envelope_by_name_and_user_integration() -> Result<()> {
+        // Use real database to test actual query logic
+        let db = sea_orm::Database::connect("sqlite::memory:").await?;
+        crate::config::database::create_tables(&db).await?;
+
+        // Create user-specific envelope
+        let user_envelope = create_envelope(
+            &db,
+            "Personal Envelope".to_string(),
+            Some("user123".to_string()),
+            "personal".to_string(),
+            150.0,
+        )
+        .await?;
+
+        // Test finding by name and user
+        let found = get_envelope_by_name_and_user(&db, "Personal Envelope", "user123").await?;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, user_envelope.id);
+
+        // Test wrong user
+        let wrong_user =
+            get_envelope_by_name_and_user(&db, "Personal Envelope", "wrong_user").await?;
+        assert!(wrong_user.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_update_envelope_balance_integration() -> Result<()> {
+        // Use real database to test actual update logic
+        let db = sea_orm::Database::connect("sqlite::memory:").await?;
+        crate::config::database::create_tables(&db).await?;
+
+        // Create an envelope
+        let envelope = create_envelope(
+            &db,
+            "Test Envelope".to_string(),
+            None,
+            "necessary".to_string(),
+            100.0,
+        )
+        .await?;
+
+        // Update the balance
+        let updated_envelope = update_envelope_balance(&db, envelope.id, 75.0).await?;
+        assert_eq!(updated_envelope.current_balance, 75.0);
+        assert_eq!(updated_envelope.id, envelope.id);
+
+        // Verify the update persisted
+        let retrieved = Envelope::find_by_id(envelope.id).one(&db).await?.unwrap();
+        assert_eq!(retrieved.current_balance, 75.0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_update_envelope_balance_not_found() -> Result<()> {
+        // Use real database to test error handling
+        let db = sea_orm::Database::connect("sqlite::memory:").await?;
+        crate::config::database::create_tables(&db).await?;
+
+        // Try to update non-existent envelope
+        let result = update_envelope_balance(&db, 999, 75.0).await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::EnvelopeNotFound { name: _ }
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_envelope_by_name_deleted_envelope() -> Result<()> {
+        // Use real database to test that deleted envelopes are not returned
+        let db = sea_orm::Database::connect("sqlite::memory:").await?;
+        crate::config::database::create_tables(&db).await?;
+
+        // Create an envelope
+        let envelope = create_envelope(
+            &db,
+            "Test Envelope".to_string(),
+            None,
+            "necessary".to_string(),
+            100.0,
+        )
+        .await?;
+
+        // Manually mark as deleted (simulating soft delete)
+        let mut envelope_model: envelope::ActiveModel = envelope.into();
+        envelope_model.is_deleted = Set(true);
+        envelope_model.update(&db).await?;
+
+        // Test that deleted envelope is not found
+        let not_found = get_envelope_by_name(&db, "Test Envelope").await?;
+        assert!(not_found.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_all_active_envelopes_excludes_deleted() -> Result<()> {
+        // Use real database to test that deleted envelopes are excluded
+        let db = sea_orm::Database::connect("sqlite::memory:").await?;
+        crate::config::database::create_tables(&db).await?;
+
+        // Create active envelope
+        let active_envelope = create_envelope(
+            &db,
+            "Active Envelope".to_string(),
+            None,
+            "necessary".to_string(),
+            100.0,
+        )
+        .await?;
+
+        // Create and delete another envelope
+        let deleted_envelope = create_envelope(
+            &db,
+            "Deleted Envelope".to_string(),
+            None,
+            "necessary".to_string(),
+            200.0,
+        )
+        .await?;
+        let mut deleted_model: envelope::ActiveModel = deleted_envelope.into();
+        deleted_model.is_deleted = Set(true);
+        deleted_model.update(&db).await?;
+
+        // Test that only active envelope is returned
+        let envelopes = get_all_active_envelopes(&db).await?;
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0], active_envelope);
+
         Ok(())
     }
 }
