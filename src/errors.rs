@@ -1,43 +1,90 @@
+//! Error types and result handling for `EnvelopeBuddy`
+//!
+//! This module provides a unified error type that consolidates all possible errors
+//! that can occur throughout the application, from database operations to Discord
+//! interactions and business logic validation.
+
 use thiserror::Error;
 
+/// Unified error type for all `EnvelopeBuddy` operations
 #[derive(Error, Debug)]
 pub enum Error {
+    /// Database operation failed (`SeaORM` errors)
     #[error("Database error: {0}")]
     Database(#[from] Box<sea_orm::DbErr>),
 
+    /// Discord API interaction failed (Serenity errors)
     #[error("Discord error: {0}")]
     Discord(#[from] Box<serenity::Error>),
 
+    /// String formatting operation failed
+    #[error("String Formatting Error: {0}")]
+    Formatting(#[from] std::fmt::Error),
+
+    /// Numeric conversion failed (e.g., i64 to i32)
+    #[error("Numeric Conversion Error: {0}")]
+    NumericConversion(#[from] std::num::TryFromIntError),
+
+    /// Requested envelope was not found in the database
     #[error("Envelope not found: {name}")]
-    EnvelopeNotFound { name: String },
+    EnvelopeNotFound {
+        /// Name of the envelope that wasn't found
+        name: String
+    },
 
+    /// Requested product was not found in the database
     #[error("Product not found: {name}")]
-    ProductNotFound { name: String },
+    ProductNotFound {
+        /// Name of the product that wasn't found
+        name: String
+    },
 
+    /// Transaction would result in negative balance
     #[error("Insufficient funds: envelope has {current}, need {required}")]
-    InsufficientFunds { current: f64, required: f64 },
+    InsufficientFunds {
+        /// Current envelope balance
+        current: f64,
+        /// Amount required for the transaction
+        required: f64
+    },
 
+    /// Transaction amount is invalid (e.g., zero, NaN, infinity)
     #[error("Invalid amount: {amount}")]
-    InvalidAmount { amount: f64 },
+    InvalidAmount {
+        /// The invalid amount value
+        amount: f64
+    },
 
+    /// Referenced user was not found
     #[error("User not found: {user_id}")]
-    UserNotFound { user_id: String },
+    UserNotFound {
+        /// Discord user ID that wasn't found
+        user_id: String
+    },
 
+    /// Configuration or system state error
     #[error("Configuration error: {message}")]
-    Config { message: String },
+    Config {
+        /// Description of the configuration error
+        message: String
+    },
 }
 
 // Add explicit From implementations for unboxed types
 impl From<sea_orm::DbErr> for Error {
     fn from(err: sea_orm::DbErr) -> Self {
-        Error::Database(Box::new(err))
+        Self::Database(Box::new(err))
     }
 }
 
 impl From<serenity::Error> for Error {
     fn from(err: serenity::Error) -> Self {
-        Error::Discord(Box::new(err))
+        Self::Discord(Box::new(err))
     }
 }
 
+/// Convenience type alias for Result<T, Error>
+///
+/// This type alias is used throughout the codebase to simplify function signatures
+/// that return results with the unified `Error` type.
 pub type Result<T> = std::result::Result<T, Error>;

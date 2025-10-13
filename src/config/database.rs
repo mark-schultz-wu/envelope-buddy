@@ -1,16 +1,18 @@
-//! Database configuration module for EnvelopeBuddy V2.
-//! This module handles SQLite database connection and table creation using SeaORM.
+//! Database configuration module for `EnvelopeBuddy` V2.
+//!
+//! This module handles `SQLite` database connection and table creation using `SeaORM`.
 //! It provides functions for establishing database connections and creating all necessary tables
-//! based on the entity definitions. The module uses SeaORM's Schema::create_table_from_entity
+//! based on the entity definitions. The module uses `SeaORM`'s `Schema::create_table_from_entity`
 //! method to automatically generate SQL statements from the entity models, ensuring that the
 //! database schema matches the Rust struct definitions without requiring manual SQL.
 
-use crate::entities::*;
+use crate::entities::{Envelope, Product, SystemState, Transaction};
 use crate::errors::Result;
-use sea_orm::*;
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Schema};
 
-/// Establishes a connection to the SQLite database using the DATABASE_URL environment variable.
-/// Falls back to a default local SQLite file if no environment variable is set.
+/// Establishes a connection to the `SQLite` database using the `DATABASE_URL` environment variable.
+///
+/// Falls back to a default local `SQLite` file if no environment variable is set.
 /// This function handles connection errors and provides a clean interface for database access
 /// throughout the application.
 pub async fn create_connection() -> Result<DatabaseConnection> {
@@ -20,8 +22,9 @@ pub async fn create_connection() -> Result<DatabaseConnection> {
     Database::connect(&database_url).await.map_err(Into::into)
 }
 
-/// Creates all necessary database tables using SeaORM's schema generation from entity definitions.
-/// This function uses the DeriveEntityModel macros to automatically generate proper SQL
+/// Creates all necessary database tables using `SeaORM`'s schema generation from entity definitions.
+///
+/// This function uses the `DeriveEntityModel` macros to automatically generate proper SQL
 /// statements for table creation, ensuring the database schema matches the Rust struct definitions.
 /// It creates tables for envelopes, products, transactions, and system state.
 pub async fn create_tables(db: &DatabaseConnection) -> Result<()> {
@@ -46,11 +49,16 @@ pub async fn create_tables(db: &DatabaseConnection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::{
+        envelope::Model as EnvelopeModel, product::Model as ProductModel,
+        system_state::Model as SystemStateModel, transaction::Model as TransactionModel,
+    };
+    use sea_orm::{EntityTrait, QuerySelect};
 
     /// Tests the database connection by executing a simple query
     async fn test_connection(db: &DatabaseConnection) -> Result<()> {
         // Test the connection with a simple query
-        let _: Vec<envelope::Model> = Envelope::find().limit(1).all(db).await?;
+        let _: Vec<EnvelopeModel> = Envelope::find().limit(1).all(db).await?;
         Ok(())
     }
 
@@ -61,7 +69,7 @@ mod tests {
         create_tables(&db).await?;
 
         // Test that we can execute a query to verify the connection is working
-        let _: Vec<envelope::Model> = Envelope::find().limit(1).all(&db).await?;
+        let _: Vec<EnvelopeModel> = Envelope::find().limit(1).all(&db).await?;
         Ok(())
     }
 
@@ -71,13 +79,13 @@ mod tests {
         create_tables(&db).await?;
 
         // Test that tables exist by querying them
-        let _: Vec<envelope::Model> = Envelope::find().limit(1).all(&db).await?;
-        let _: Vec<product::Model> = Product::find().limit(1).all(&db).await?;
-        let _: Vec<transaction::Model> = crate::entities::Transaction::find()
+        let _: Vec<EnvelopeModel> = Envelope::find().limit(1).all(&db).await?;
+        let _: Vec<ProductModel> = Product::find().limit(1).all(&db).await?;
+        let _: Vec<TransactionModel> = crate::entities::Transaction::find()
             .limit(1)
             .all(&db)
             .await?;
-        let _: Vec<system_state::Model> = SystemState::find().limit(1).all(&db).await?;
+        let _: Vec<SystemStateModel> = SystemState::find().limit(1).all(&db).await?;
 
         Ok(())
     }

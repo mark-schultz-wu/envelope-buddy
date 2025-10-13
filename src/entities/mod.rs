@@ -1,4 +1,5 @@
-//! Entity module - Contains all SeaORM entity definitions for the database.
+//! Entity module - Contains all `SeaORM` entity definitions for the database.
+//!
 //! These entities represent the database tables and their relationships.
 //! Each entity has a Model struct for data and an Entity struct for operations.
 
