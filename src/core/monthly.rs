@@ -11,7 +11,7 @@ use crate::{
     errors::{Error, Result},
 };
 use chrono::{Datelike, NaiveDate, Utc};
-use sea_orm::{Set, prelude::*};
+use sea_orm::{Set, prelude::*, TransactionTrait};
 
 const LAST_MONTHLY_UPDATE_KEY: &str = "last_monthly_update";
 
@@ -97,7 +97,10 @@ pub async fn get_last_monthly_update_date(db: &DatabaseConnection) -> Result<Opt
 /// # Arguments
 /// * `db` - Database connection
 /// * `date` - The date to store as the last update date
-async fn set_last_monthly_update_date(db: &DatabaseConnection, date: NaiveDate) -> Result<()> {
+async fn set_last_monthly_update_date<C>(db: &C, date: NaiveDate) -> Result<()>
+where
+    C: ConnectionTrait,
+{
     let date_str = date.format("%Y-%m-%d").to_string();
     let now = Utc::now().naive_utc();
 
@@ -149,6 +152,10 @@ pub async fn process_monthly_updates(
         return Ok(None);
     }
 
+    // Start a database transaction to ensure atomicity
+    // All envelope updates must succeed or all must fail
+    let txn = db.begin().await?;
+
     let now = Utc::now().date_naive();
     let mut results = Vec::new();
     let mut rollover_count = 0;
@@ -157,7 +164,7 @@ pub async fn process_monthly_updates(
     // Get all active envelopes
     let envelopes = Envelope::find()
         .filter(envelope::Column::IsDeleted.eq(false))
-        .all(db)
+        .all(&txn)
         .await?;
 
     // Process each envelope
@@ -174,7 +181,7 @@ pub async fn process_monthly_updates(
         // Update the envelope balance
         let mut active_model: envelope::ActiveModel = env.clone().into();
         active_model.balance = Set(new_balance);
-        active_model.update(db).await?;
+        active_model.update(&txn).await?;
 
         // Track statistics
         if env.rollover {
@@ -194,7 +201,10 @@ pub async fn process_monthly_updates(
     }
 
     // Record the update date
-    set_last_monthly_update_date(db, now).await?;
+    set_last_monthly_update_date(&txn, now).await?;
+
+    // Commit the transaction - all updates succeed or all fail
+    txn.commit().await?;
 
     Ok(Some(MonthlyUpdateResult {
         total_envelopes_processed: results.len(),
@@ -215,20 +225,21 @@ pub async fn process_monthly_updates(
 /// * A formatted string summarizing the update
 #[must_use]
 pub fn format_monthly_update_summary(result: &MonthlyUpdateResult) -> String {
+    use std::fmt::Write;
+
     let mut summary = format!(
         "Monthly Update - {} - Processed {} envelopes\n",
         result.update_date.format("%B %Y"),
         result.total_envelopes_processed
     );
 
-    // Using format! + push_str instead of write! to avoid Result return type.
-    // write! would require std::fmt::Write and Result handling, adding complexity
-    // for a simple string formatting function. The allocation cost is acceptable here.
-    #[allow(clippy::format_push_string)]
-    summary.push_str(&format!(
+    // write! is infallible when writing to String, so unwrap is safe
+    write!(
+        summary,
         "  Rollover: {} envelopes | Reset: {} envelopes\n\n",
         result.rollover_count, result.reset_count
-    ));
+    )
+    .unwrap();
 
     for envelope_result in &result.updated_envelopes {
         let change_type = if envelope_result.rollover {
@@ -237,15 +248,16 @@ pub fn format_monthly_update_summary(result: &MonthlyUpdateResult) -> String {
             "Reset"
         };
 
-        #[allow(clippy::format_push_string)]
-        summary.push_str(&format!(
-            "  {} - {} | ${:.2} → ${:.2} (Allocation: ${:.2})\n",
+        writeln!(
+            summary,
+            "  {} - {} | ${:.2} → ${:.2} (Allocation: ${:.2})",
             envelope_result.envelope_name,
             change_type,
             envelope_result.old_balance,
             envelope_result.new_balance,
             envelope_result.allocation
-        ));
+        )
+        .unwrap();
     }
 
     summary

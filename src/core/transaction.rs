@@ -10,7 +10,7 @@ use crate::{
     entities::{Envelope, transaction},
     errors::{Error, Result},
 };
-use sea_orm::{QueryOrder, Set, prelude::*};
+use sea_orm::{QueryOrder, Set, prelude::*, TransactionTrait};
 
 /// Creates a new transaction and automatically updates the envelope balance.
 ///
@@ -42,8 +42,11 @@ pub async fn create_transaction(
         return Err(Error::InvalidAmount { amount });
     }
 
+    // Use a transaction to ensure atomicity
+    let txn = db.begin().await?;
+
     let envelope = Envelope::find_by_id(envelope_id)
-        .one(db)
+        .one(&txn)
         .await?
         .ok_or_else(|| Error::EnvelopeNotFound {
             name: envelope_id.to_string(),
@@ -55,6 +58,8 @@ pub async fn create_transaction(
         });
     }
 
+    // Check if the resulting balance would be negative (for spending)
+    // This is a preliminary check - the atomic update will ensure consistency
     let new_balance = envelope.balance + amount;
     if new_balance < 0.0 {
         return Err(Error::InsufficientFunds {
@@ -64,7 +69,7 @@ pub async fn create_transaction(
     }
 
     let now = chrono::Utc::now();
-    let transaction = transaction::ActiveModel {
+    let transaction_model = transaction::ActiveModel {
         envelope_id: Set(envelope_id),
         amount: Set(amount),
         description: Set(description),
@@ -75,8 +80,14 @@ pub async fn create_transaction(
         ..Default::default()
     };
 
-    let result = transaction.insert(db).await?;
-    crate::core::envelope::update_envelope_balance(db, envelope_id, new_balance).await?;
+    let result = transaction_model.insert(&txn).await?;
+
+    // Atomically update the balance
+    crate::core::envelope::update_envelope_balance_atomic(&txn, envelope_id, amount).await?;
+
+    // Commit the transaction
+    txn.commit().await?;
+
     Ok(result)
 }
 
@@ -118,25 +129,35 @@ pub async fn get_transaction_by_id(
 /// deleted, the envelope's balance is automatically adjusted by subtracting the transaction amount,
 /// ensuring that the envelope balance remains accurate and consistent with the remaining transactions.
 pub async fn delete_transaction(db: &DatabaseConnection, transaction_id: i64) -> Result<()> {
+    // Use a transaction to ensure atomicity
+    let txn = db.begin().await?;
+
     let transaction = crate::entities::Transaction::find_by_id(transaction_id)
-        .one(db)
+        .one(&txn)
         .await?
         .ok_or_else(|| Error::Config {
             message: "Transaction not found".to_string(),
         })?;
 
-    let envelope = Envelope::find_by_id(transaction.envelope_id)
-        .one(db)
+    // Verify envelope exists
+    Envelope::find_by_id(transaction.envelope_id)
+        .one(&txn)
         .await?
         .ok_or_else(|| Error::EnvelopeNotFound {
             name: transaction.envelope_id.to_string(),
         })?;
 
-    let new_balance = envelope.balance - transaction.amount;
-    let envelope_id = transaction.envelope_id; // Store the ID before moving transaction
+    let envelope_id = transaction.envelope_id;
+    let amount_to_reverse = -transaction.amount; // Negate to reverse the transaction
 
-    transaction.delete(db).await?;
-    crate::core::envelope::update_envelope_balance(db, envelope_id, new_balance).await?;
+    // Delete the transaction
+    transaction.delete(&txn).await?;
+
+    // Atomically update the balance by reversing the transaction amount
+    crate::core::envelope::update_envelope_balance_atomic(&txn, envelope_id, amount_to_reverse).await?;
+
+    // Commit the transaction
+    txn.commit().await?;
     Ok(())
 }
 #[cfg(test)]

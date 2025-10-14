@@ -8,7 +8,7 @@ mod inner {
     #![allow(missing_docs)]
 
     use crate::{
-        bot::BotData,
+        bot::{BotData, handlers::autocomplete},
         core::{envelope, monthly, report},
         errors::{Error, Result},
     };
@@ -113,7 +113,9 @@ mod inner {
     #[poise::command(slash_command, prefix_command)]
     pub async fn envelope_info(
         ctx: poise::Context<'_, BotData, Error>,
-        #[description = "Name of the envelope"] envelope_name: String,
+        #[description = "Name of the envelope"]
+        #[autocomplete = "autocomplete::autocomplete_envelope_name"]
+        envelope_name: String,
         #[description = "User ID (for individual envelopes)"] user: Option<String>,
     ) -> Result<()> {
         let db = &ctx.data().database;
@@ -243,6 +245,11 @@ mod inner {
     ) -> Result<()> {
         let db = &ctx.data().database;
 
+        if allocation.is_nan() || allocation.is_infinite() {
+            ctx.say("❌ Invalid allocation: must be a valid number")
+                .await?;
+            return Ok(());
+        }
         if allocation < 0.0 {
             ctx.say("❌ Allocation must be a non-negative number.")
                 .await?;
@@ -367,6 +374,11 @@ mod inner {
         }
 
         if let Some(alloc) = allocation {
+            if alloc.is_nan() || alloc.is_infinite() {
+                ctx.say("❌ Invalid allocation: must be a valid number")
+                    .await?;
+                return Ok(());
+            }
             if alloc < 0.0 {
                 ctx.say("❌ Allocation must be a non-negative number.")
                     .await?;

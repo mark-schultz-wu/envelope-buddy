@@ -10,6 +10,15 @@ use crate::entities::{Envelope, Product, SystemState, Transaction};
 use crate::errors::Result;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Schema};
 
+/// Gets the database URL from environment variable or returns default `SQLite` path.
+///
+/// This function looks for `DATABASE_URL` in the environment and falls back to
+/// a default local `SQLite` file if not found.
+pub fn get_database_url() -> Result<String> {
+    Ok(std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "sqlite://data/envelope_buddy.sqlite".to_string()))
+}
+
 /// Establishes a connection to the `SQLite` database using the `DATABASE_URL` environment variable.
 ///
 /// Falls back to a default local `SQLite` file if no environment variable is set.

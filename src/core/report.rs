@@ -118,13 +118,9 @@ pub fn format_progress_bar(progress_percent: f64, bar_length: Option<usize>) -> 
     let length = bar_length.unwrap_or(10);
     let clamped_progress = progress_percent.clamp(0.0, 100.0);
 
-    // Casts are safe here because:
-    // - progress is clamped to [0, 100], so result is in [0, length]
-    // - length is typically small (10-20), so precision loss is negligible
-    // - final value is always non-negative and fits in usize
-    #[allow(clippy::cast_possible_truncation)]
-    #[allow(clippy::cast_sign_loss)]
-    #[allow(clippy::cast_precision_loss)]
+    // Cast safety: clamped_progress ∈ [0, 100], length is small (10-20).
+    // Result is mathematically in [0, length], truncation/sign loss intentional for display.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
     let filled = ((clamped_progress / 100.0) * length as f64).round() as usize;
     let empty = length.saturating_sub(filled);
 

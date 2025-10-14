@@ -6,15 +6,13 @@
 mod inner {
     #![allow(missing_docs)]
 
-    use poise::serenity_prelude as serenity;
+    use crate::{bot::BotData, errors::{Error, Result}};
 
     /// Responds with "Pong!" to test bot connectivity.
     ///
     /// This is a simple health check command that doesn't require any database operations.
     #[poise::command(slash_command, prefix_command)]
-    pub async fn ping(
-        ctx: poise::Context<'_, (), serenity::Error>,
-    ) -> Result<(), serenity::Error> {
+    pub async fn ping(ctx: poise::Context<'_, BotData, Error>) -> Result<()> {
         ctx.say("Pong!").await?;
         Ok(())
     }
@@ -24,9 +22,7 @@ mod inner {
     /// This command provides users with information about all available bot commands
     /// and their usage, helping them understand the bot's capabilities.
     #[poise::command(slash_command, prefix_command)]
-    pub async fn help(
-        ctx: poise::Context<'_, (), serenity::Error>,
-    ) -> Result<(), serenity::Error> {
+    pub async fn help(ctx: poise::Context<'_, BotData, Error>) -> Result<()> {
         let help_text = "**EnvelopeBuddy Help**\n\
         Here is a summary of all available commands for EnvelopeBuddy.\n\n\
         **Action Commands**\n\

@@ -1,14 +1,15 @@
 //! Discord command implementations organized by category.
 
+// Clippy incorrectly treats separate module doc comments as one paragraph
 #![allow(clippy::too_long_first_doc_paragraph)]
 
-/// Envelope management commands
+/// Envelope commands
 pub mod envelope;
 
-/// General utility commands
+/// General commands
 pub mod general;
 
-/// Product management commands
+/// Product commands
 pub mod product;
 
 /// Transaction commands
@@ -17,4 +18,5 @@ pub mod transaction;
 // Export commands
 pub use envelope::*;
 pub use general::*;
+pub use product::*;
 pub use transaction::*;

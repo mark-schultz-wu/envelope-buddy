@@ -110,27 +110,75 @@ pub async fn create_envelope(
     Ok(result)
 }
 
-/// Updates the balance of an existing envelope.
+/// Updates the balance of an existing envelope by atomically adding an amount.
 ///
-/// This function is called after transactions to maintain accurate balance tracking.
-/// It first verifies the envelope exists before attempting the update to prevent
-/// orphaned balance changes.
+/// This function performs an atomic database-level update to prevent race conditions.
+/// Instead of reading the current balance, modifying it, and writing it back (which
+/// can lose updates in concurrent scenarios), this uses a single SQL UPDATE statement:
+/// `UPDATE envelopes SET balance = balance + amount WHERE id = ?`
+///
+/// # Arguments
+/// * `db` - Database connection or transaction
+/// * `envelope_id` - ID of the envelope to update
+/// * `amount_delta` - Amount to add to the balance (use negative for subtraction)
+///
+/// # Returns
+/// The updated envelope model
+pub async fn update_envelope_balance_atomic<C>(
+    db: &C,
+    envelope_id: i64,
+    amount_delta: f64,
+) -> Result<envelope::Model>
+where
+    C: ConnectionTrait,
+{
+    use sea_orm::sea_query::Expr;
+
+    // First verify the envelope exists
+    let _envelope = Envelope::find_by_id(envelope_id)
+        .one(db)
+        .await?
+        .ok_or_else(|| Error::EnvelopeNotFound {
+            name: envelope_id.to_string(),
+        })?;
+
+    // Perform atomic update: balance = balance + amount_delta
+    Envelope::update_many()
+        .col_expr(
+            envelope::Column::Balance,
+            Expr::col(envelope::Column::Balance).add(amount_delta),
+        )
+        .filter(envelope::Column::Id.eq(envelope_id))
+        .exec(db)
+        .await?;
+
+    // Return the updated envelope
+    Envelope::find_by_id(envelope_id)
+        .one(db)
+        .await?
+        .ok_or_else(|| Error::EnvelopeNotFound {
+            name: envelope_id.to_string(),
+        })
+}
+
+/// Legacy wrapper for backwards compatibility with tests that pass absolute balance values.
+/// New code should use `update_envelope_balance_atomic` with amount deltas instead.
+#[doc(hidden)]
 pub async fn update_envelope_balance(
     db: &DatabaseConnection,
     envelope_id: i64,
     new_balance: f64,
 ) -> Result<envelope::Model> {
-    let mut envelope: envelope::ActiveModel = Envelope::find_by_id(envelope_id)
+    // Calculate the delta from the current balance
+    let envelope = Envelope::find_by_id(envelope_id)
         .one(db)
         .await?
         .ok_or_else(|| Error::EnvelopeNotFound {
             name: envelope_id.to_string(),
-        })?
-        .into();
+        })?;
 
-    envelope.balance = Set(new_balance);
-
-    envelope.update(db).await.map_err(Into::into)
+    let delta = new_balance - envelope.balance;
+    update_envelope_balance_atomic(db, envelope_id, delta).await
 }
 #[cfg(test)]
 mod tests {

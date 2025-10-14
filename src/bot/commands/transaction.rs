@@ -1,4 +1,4 @@
-//! Transaction Discord commands - `spend`, `addfunds`, `use_product`, and `report`.
+//! Transaction Discord commands - `spend` and `addfunds`.
 //!
 //! This module contains commands that interact with the database through our core modules
 //! to handle financial transactions and reporting within the envelope system.
@@ -8,7 +8,7 @@ mod inner {
     #![allow(missing_docs)]
 
     use crate::{
-        bot::BotData,
+        bot::{BotData, handlers::autocomplete},
         core::{envelope, transaction},
         errors::{Error, Result},
     };
@@ -21,12 +21,24 @@ mod inner {
     #[poise::command(slash_command, prefix_command)]
     pub async fn spend(
         ctx: poise::Context<'_, BotData, Error>,
-        #[description = "Name of the envelope to spend from"] envelope_name: String,
+        #[description = "Name of the envelope to spend from"]
+        #[autocomplete = "autocomplete::autocomplete_envelope_name"]
+        envelope_name: String,
         #[description = "Amount to spend"] amount: f64,
         #[description = "Optional user ID (for individual envelopes)"] user: Option<String>,
         #[description = "Optional description of the expense"] description: Option<String>,
     ) -> Result<()> {
         const DEFAULT_DESCRIPTION: &str = "Transaction";
+
+        // Validate amount parameter
+        if amount.is_nan() || amount.is_infinite() {
+            ctx.say("❌ Invalid amount: must be a valid number").await?;
+            return Ok(());
+        }
+        if amount <= 0.0 {
+            ctx.say("❌ Invalid amount: must be greater than zero").await?;
+            return Ok(());
+        }
 
         // Use provided user ID or default to the command author
         let author_id = ctx.author().id.to_string();
@@ -91,12 +103,24 @@ mod inner {
     #[poise::command(slash_command, prefix_command)]
     pub async fn addfunds(
         ctx: poise::Context<'_, BotData, Error>,
-        #[description = "Name of the envelope to add funds to"] envelope_name: String,
+        #[description = "Name of the envelope to add funds to"]
+        #[autocomplete = "autocomplete::autocomplete_envelope_name"]
+        envelope_name: String,
         #[description = "Amount to add"] amount: f64,
         #[description = "Optional user ID (for individual envelopes)"] user: Option<String>,
         #[description = "Optional description of the income"] description: Option<String>,
     ) -> Result<()> {
         const DEFAULT_DESCRIPTION: &str = "Income";
+
+        // Validate amount parameter
+        if amount.is_nan() || amount.is_infinite() {
+            ctx.say("❌ Invalid amount: must be a valid number").await?;
+            return Ok(());
+        }
+        if amount <= 0.0 {
+            ctx.say("❌ Invalid amount: must be greater than zero").await?;
+            return Ok(());
+        }
 
         // Use provided user ID or default to the command author
         let author_id = ctx.author().id.to_string();
@@ -143,77 +167,6 @@ mod inner {
         Ok(())
     }
 
-    /// Logs an expense using a predefined product.
-    ///
-    /// This command creates a transaction using a product's fixed price, making it
-    /// quick and easy to log common expenses without typing amounts.
-    #[poise::command(slash_command, prefix_command)]
-    pub async fn use_product(
-        ctx: poise::Context<'_, BotData, Error>,
-        #[description = "Name of the product to use"] product_name: String,
-        #[description = "Optional quantity (defaults to 1)"] quantity: Option<i32>,
-        #[description = "Optional description"] description: Option<String>,
-    ) -> Result<()> {
-        const DEFAULT_DESCRIPTION: &str = "Product usage";
-
-        let desc: &str = description.as_ref().map_or(DEFAULT_DESCRIPTION, |d| d);
-        let qty = quantity.unwrap_or(1);
-
-        // Get database connection from context
-        let db = &ctx.data().database;
-
-        // Find the product
-        let product = crate::core::product::get_product_by_name(db, &product_name).await?;
-        let Some(product) = product else {
-            ctx.say(&format!("Product '{product_name}' not found"))
-                .await?;
-            return Ok(());
-        };
-
-        // Calculate total cost
-        let total_cost = product.price * f64::from(qty);
-
-        // Get the envelope associated with this product
-        let envelope = envelope::get_envelope_by_id(db, product.envelope_id).await?;
-        let Some(envelope) = envelope else {
-            ctx.say(&format!(
-                "Envelope for product '{product_name}' not found"
-            ))
-            .await?;
-            return Ok(());
-        };
-
-        // Check if envelope has sufficient funds
-        if envelope.balance < total_cost {
-            ctx.say(&format!(
-                "Insufficient funds! Envelope '{}' has ${:.2}, but '{}' costs ${:.2}",
-                envelope.name, envelope.balance, product_name, total_cost
-            ))
-            .await?;
-            return Ok(());
-        }
-
-        // Create the transaction
-        // Note: Product name is now stored in description, not via product_id FK
-        let transaction = transaction::create_transaction(
-            db,
-            envelope.id,
-            -total_cost, // Negative amount for spending
-            format!("{qty}x {product_name} - {desc}"),
-            ctx.author().id.to_string(),
-            Some(ctx.id().to_string()),
-            "use_product".to_string(),
-        )
-        .await?;
-
-        ctx.say(&format!(
-            "✅ Used {}x '{}' (${:.2} each) = ${:.2} from envelope '{}' - {} (Transaction ID: {})",
-            qty, product_name, product.price, total_cost, envelope.name, desc, transaction.id
-        ))
-        .await?;
-
-        Ok(())
-    }
 }
 
 // Re-export all commands
