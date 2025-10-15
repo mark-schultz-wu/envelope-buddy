@@ -61,8 +61,6 @@ A Discord bot for envelope-style budgeting, designed for couples to track shared
 - `DATABASE_URL` - Database path (default: `sqlite://data/envelope_buddy.sqlite`)
 - `RUST_LOG` - Logging level (default: `info`)
 
-**Important Note**: The `config.toml` file is only read during initial database creation. After first run, all envelope data lives in the SQLite database. To modify envelopes after initial setup, use Discord commands, not the config file.
-
 ## Core Concepts
 
 ### Envelopes
@@ -273,23 +271,6 @@ cargo fmt
 cargo build --release
 ```
 
-## Future Plans
-
-- **Splurge Mechanism**: Split expenses between primary and "splurge" envelope
-- **Recurring Transactions**: Automated subscription/income tracking
-- **Savings Goals**: Set and track envelope targets
-- **Transaction History**: View historical spending by month
-- **Fund Transfers**: Move money between envelopes
-
 ## License
 
 Apache License 2.0 - See [LICENSE](LICENSE) file for details.
-
-## Architecture Notes
-
-This project follows a clean architecture:
-- **Bot Layer**: Discord-specific code (commands, embeds, autocomplete)
-- **Core Layer**: Framework-agnostic business logic
-- **Database Layer**: SeaORM entities and migrations
-
-The V2 rewrite (current version) replaced complex raw SQL with SeaORM for better maintainability and type safety. All 70+ core business logic tests ensure reliability.
