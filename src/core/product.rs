@@ -15,6 +15,9 @@ use sea_orm::{QueryOrder, Set, prelude::*};
 ///
 /// This function is commonly used to display the complete list of available products
 /// to users, such as in autocomplete suggestions or product selection interfaces.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_all_active_products(db: &DatabaseConnection) -> Result<Vec<product::Model>> {
     Product::find()
         .filter(product::Column::IsDeleted.eq(false))
@@ -28,6 +31,9 @@ pub async fn get_all_active_products(db: &DatabaseConnection) -> Result<Vec<prod
 ///
 /// This function is used for product lookups when users reference products by name
 /// in commands, and ensures that deleted products are not accessible.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_product_by_name(
     db: &DatabaseConnection,
     name: &str,
@@ -43,6 +49,9 @@ pub async fn get_product_by_name(
 /// Retrieves a specific product by its unique ID.
 /// This function is used for product lookups when the ID is known, such as when
 /// processing transactions that reference a product by ID.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_product_by_id(
     db: &DatabaseConnection,
     product_id: i64,
@@ -58,6 +67,12 @@ pub async fn get_product_by_id(
 /// This function validates that the name is not empty, the price is non-negative,
 /// and trims whitespace from the name. It initializes the product with proper
 /// timestamps for tracking creation and updates.
+///
+/// # Errors
+/// Returns an error if:
+/// - The product name is empty or whitespace-only
+/// - The price is negative or not finite (NaN, infinity)
+/// - The database insert operation fails
 pub async fn create_product(
     db: &DatabaseConnection,
     name: String,
@@ -97,6 +112,13 @@ pub async fn create_product(
 ///
 /// This function validates the new parameters and ensures the product exists
 /// before attempting the update. It refreshes the updated timestamp.
+///
+/// # Errors
+/// Returns an error if:
+/// - The product name is empty or whitespace-only
+/// - The price is negative or not finite (NaN, infinity)
+/// - The product does not exist or is already deleted
+/// - The database update operation fails
 pub async fn update_product(
     db: &DatabaseConnection,
     product_id: i64,
@@ -142,6 +164,11 @@ pub async fn update_product(
 /// Soft deletes a product by marking it as deleted, preserving transaction history.
 /// This function ensures the product exists and is not already deleted before
 /// performing the soft delete operation.
+///
+/// # Errors
+/// Returns an error if:
+/// - The product does not exist or is already deleted
+/// - The database update operation fails
 pub async fn delete_product(db: &DatabaseConnection, product_id: i64) -> Result<product::Model> {
     let mut product: product::ActiveModel = Product::find_by_id(product_id)
         .one(db)

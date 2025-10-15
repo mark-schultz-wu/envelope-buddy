@@ -14,6 +14,9 @@ use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Schema};
 ///
 /// This function looks for `DATABASE_URL` in the environment and falls back to
 /// a default local `SQLite` file if not found.
+///
+/// # Errors
+/// This function currently always returns `Ok`, but returns `Result` for future extensibility.
 pub fn get_database_url() -> Result<String> {
     Ok(std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "sqlite://data/envelope_buddy.sqlite".to_string()))
@@ -24,6 +27,11 @@ pub fn get_database_url() -> Result<String> {
 /// Falls back to a default local `SQLite` file if no environment variable is set.
 /// This function handles connection errors and provides a clean interface for database access
 /// throughout the application.
+///
+/// # Errors
+/// Returns an error if:
+/// - The database connection cannot be established
+/// - The database file path is invalid or inaccessible
 pub async fn create_connection() -> Result<DatabaseConnection> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "sqlite://data/envelope_buddy.sqlite".to_string());
@@ -37,6 +45,11 @@ pub async fn create_connection() -> Result<DatabaseConnection> {
 /// statements for table creation, ensuring the database schema matches the Rust struct definitions.
 /// It creates tables for envelopes, products, transactions, and system state.
 /// Uses `IF NOT EXISTS` to safely run on existing databases (idempotent).
+///
+/// # Errors
+/// Returns an error if:
+/// - The SQL table creation statement execution fails
+/// - Database permissions are insufficient to create tables
 pub async fn create_tables(db: &DatabaseConnection) -> Result<()> {
     // Use SeaORM's proper table creation using Schema::create_table_from_entity
     let builder = db.get_database_backend();

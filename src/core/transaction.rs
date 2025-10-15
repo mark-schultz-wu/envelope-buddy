@@ -25,6 +25,13 @@ use sea_orm::{QueryOrder, Set, TransactionTrait, prelude::*};
 /// * `user_id` - Discord user ID who created the transaction
 /// * `message_id` - Optional Discord message ID for reference
 /// * `transaction_type` - Type of transaction ("spend", "addfunds", etc.)
+///
+/// # Errors
+/// Returns an error if:
+/// - The amount is zero or not finite (NaN, infinity)
+/// - The envelope does not exist or is deleted
+/// - The transaction would result in a negative balance
+/// - The database transaction fails
 pub async fn create_transaction(
     db: &DatabaseConnection,
     envelope_id: i64,
@@ -96,6 +103,9 @@ pub async fn create_transaction(
 /// This function is commonly used to display transaction history for an envelope, allowing users
 /// to see all financial activity associated with a particular envelope. The results are ordered
 /// chronologically with the most recent transactions appearing first for better user experience.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_transactions_for_envelope(
     db: &DatabaseConnection,
     envelope_id: i64,
@@ -113,6 +123,9 @@ pub async fn get_transactions_for_envelope(
 /// This function is used for transaction lookups when users need to view, update, or delete
 /// a particular transaction. It returns None if the transaction doesn't exist, allowing callers
 /// to handle missing transactions gracefully without throwing errors.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_transaction_by_id(
     db: &DatabaseConnection,
     transaction_id: i64,
@@ -128,6 +141,12 @@ pub async fn get_transaction_by_id(
 /// This function is used for transaction corrections and cancellations. When a transaction is
 /// deleted, the envelope's balance is automatically adjusted by subtracting the transaction amount,
 /// ensuring that the envelope balance remains accurate and consistent with the remaining transactions.
+///
+/// # Errors
+/// Returns an error if:
+/// - The transaction does not exist
+/// - The associated envelope does not exist
+/// - The database transaction fails
 pub async fn delete_transaction(db: &DatabaseConnection, transaction_id: i64) -> Result<()> {
     // Use a transaction to ensure atomicity
     let txn = db.begin().await?;

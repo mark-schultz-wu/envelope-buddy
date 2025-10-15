@@ -55,6 +55,9 @@ pub struct MonthlyUpdateResult {
 /// # Returns
 /// * `Ok(true)` - A monthly update is needed
 /// * `Ok(false)` - Already updated this month
+///
+/// # Errors
+/// Returns an error if the database query to retrieve the last update date fails.
 pub async fn is_monthly_update_needed(db: &DatabaseConnection) -> Result<bool> {
     let last_update = get_last_monthly_update_date(db).await?;
     let now = Utc::now().date_naive();
@@ -73,6 +76,11 @@ pub async fn is_monthly_update_needed(db: &DatabaseConnection) -> Result<bool> {
 /// # Returns
 /// * `Ok(Some(date))` - Last update date if it exists
 /// * `Ok(None)` - No previous update recorded
+///
+/// # Errors
+/// Returns an error if:
+/// - The database query fails
+/// - The stored date string cannot be parsed
 pub async fn get_last_monthly_update_date(db: &DatabaseConnection) -> Result<Option<NaiveDate>> {
     let state = SystemState::find()
         .filter(system_state::Column::Key.eq(LAST_MONTHLY_UPDATE_KEY))
@@ -144,6 +152,12 @@ where
 /// # Returns
 /// * `Ok(Some(result))` - Update was performed with detailed results
 /// * `Ok(None)` - No update needed (already updated this month)
+///
+/// # Errors
+/// Returns an error if:
+/// - The database transaction fails to begin or commit
+/// - Envelope balance updates fail
+/// - Recording the update date fails
 pub async fn process_monthly_updates(
     db: &DatabaseConnection,
 ) -> Result<Option<MonthlyUpdateResult>> {

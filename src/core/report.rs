@@ -41,6 +41,12 @@ pub struct EnvelopeReport {
 ///
 /// # Returns
 /// A structured `EnvelopeReport` containing all report data
+///
+/// # Errors
+/// Returns an error if:
+/// - The envelope does not exist
+/// - Database queries fail
+/// - Transaction limit conversion fails
 pub async fn generate_envelope_report(
     db: &DatabaseConnection,
     envelope_id: i64,

@@ -13,6 +13,9 @@ use sea_orm::{QueryOrder, Set, prelude::*};
 ///
 /// This function is commonly used to display the complete list of available envelopes
 /// to users, such as in autocomplete suggestions or envelope selection interfaces.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_all_active_envelopes(db: &DatabaseConnection) -> Result<Vec<envelope::Model>> {
     Envelope::find()
         .filter(envelope::Column::IsDeleted.eq(false))
@@ -26,6 +29,9 @@ pub async fn get_all_active_envelopes(db: &DatabaseConnection) -> Result<Vec<env
 ///
 /// This function is used for envelope lookups when users reference envelopes by name
 /// in commands, and ensures that deleted envelopes are not accessible.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_envelope_by_name(
     db: &DatabaseConnection,
     name: &str,
@@ -42,6 +48,9 @@ pub async fn get_envelope_by_name(
 ///
 /// This function is essential for personal envelopes where users can only access
 /// their own envelopes, preventing unauthorized access to other users' personal finances.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_envelope_by_name_and_user(
     db: &DatabaseConnection,
     name: &str,
@@ -60,6 +69,9 @@ pub async fn get_envelope_by_name_and_user(
 ///
 /// This function is used when the envelope ID is known, such as when
 /// processing transactions or retrieving envelope details by primary key.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_envelope_by_id(
     db: &DatabaseConnection,
     envelope_id: i64,
@@ -74,6 +86,9 @@ pub async fn get_envelope_by_id(
 ///
 /// This function is used for autocomplete suggestions, returning only categories
 /// that are currently in use by non-deleted envelopes.
+///
+/// # Errors
+/// Returns an error if the database query fails.
 pub async fn get_all_categories(db: &DatabaseConnection) -> Result<Vec<String>> {
     let envelopes = Envelope::find()
         .filter(envelope::Column::IsDeleted.eq(false))
@@ -97,6 +112,12 @@ pub async fn get_all_categories(db: &DatabaseConnection) -> Result<Vec<String>> 
 ///
 /// This function validates that the name is not empty, the allocation is non-negative,
 /// and trims whitespace from the name. It initializes the envelope with zero balance.
+///
+/// # Errors
+/// Returns an error if:
+/// - The envelope name is empty or whitespace-only
+/// - The allocation amount is negative
+/// - The database insert operation fails
 pub async fn create_envelope(
     db: &DatabaseConnection,
     name: String,
@@ -147,6 +168,11 @@ pub async fn create_envelope(
 ///
 /// # Returns
 /// The updated envelope model
+///
+/// # Errors
+/// Returns an error if:
+/// - The envelope does not exist
+/// - The database update operation fails
 pub async fn update_envelope_balance_atomic<C>(
     db: &C,
     envelope_id: i64,

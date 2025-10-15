@@ -59,6 +59,12 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config> {
 /// # Returns
 /// * `Ok(Config)` - Successfully parsed configuration
 /// * `Err(Error)` - Failed to read or parse the configuration file
+///
+/// # Errors
+/// Returns an error if:
+/// - The config.toml file cannot be read
+/// - The TOML syntax is invalid
+/// - Required fields are missing
 pub fn load_default_config() -> Result<Config> {
     load_config("config.toml")
 }

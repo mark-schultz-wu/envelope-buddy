@@ -67,8 +67,6 @@
 // Allow some pedantic lints that are too noisy or not applicable
 #![allow(
     clippy::module_name_repetitions,  // Common pattern: transaction::Transaction is clearer than transaction::Model
-    clippy::missing_errors_doc,        // TODO: Add error documentation gradually
-    clippy::missing_panics_doc,        // TODO: Add panic documentation gradually
 )]
 
 // Note: `missing_docs` is set to `warn` instead of `deny` because:

@@ -12,6 +12,9 @@ use sea_orm::DatabaseConnection;
 
 /// Creates an in-memory `SQLite` database with all tables initialized.
 /// This is the standard setup for all integration tests.
+///
+/// # Errors
+/// Returns an error if database connection or table creation fails.
 pub async fn setup_test_db() -> Result<DatabaseConnection> {
     let db = sea_orm::Database::connect("sqlite::memory:").await?;
     crate::config::database::create_tables(&db).await?;
@@ -30,6 +33,9 @@ pub async fn setup_test_db() -> Result<DatabaseConnection> {
 /// * `allocation`: 100.0
 /// * `is_individual`: false
 /// * `rollover`: false
+///
+/// # Errors
+/// Returns an error if envelope creation fails.
 pub async fn create_test_envelope(
     db: &DatabaseConnection,
     name: &str,
@@ -48,6 +54,9 @@ pub async fn create_test_envelope(
 
 /// Creates a test envelope with custom parameters.
 /// Use this when you need to test specific envelope configurations.
+///
+/// # Errors
+/// Returns an error if envelope creation fails.
 pub async fn create_custom_envelope(
     db: &DatabaseConnection,
     name: &str,
@@ -78,6 +87,9 @@ pub async fn create_custom_envelope(
 ///
 /// # Defaults
 /// * price: 10.0
+///
+/// # Errors
+/// Returns an error if product creation fails.
 pub async fn create_test_product(
     db: &DatabaseConnection,
     name: &str,
@@ -87,6 +99,9 @@ pub async fn create_test_product(
 }
 
 /// Creates a test product with custom price.
+///
+/// # Errors
+/// Returns an error if product creation fails.
 pub async fn create_custom_product(
     db: &DatabaseConnection,
     name: &str,
@@ -108,6 +123,9 @@ pub async fn create_custom_product(
 /// * `user_id`: `"test_user"`
 /// * `message_id`: None
 /// * `transaction_type`: "spend" (if negative) or "addfunds" (if positive)
+///
+/// # Errors
+/// Returns an error if transaction creation fails.
 pub async fn create_test_transaction(
     db: &DatabaseConnection,
     envelope_id: i64,
@@ -128,6 +146,9 @@ pub async fn create_test_transaction(
 }
 
 /// Creates a test transaction with custom parameters.
+///
+/// # Errors
+/// Returns an error if transaction creation fails.
 pub async fn create_custom_transaction(
     db: &DatabaseConnection,
     envelope_id: i64,
@@ -151,6 +172,9 @@ pub async fn create_custom_transaction(
 
 /// Sets up a complete test environment with an envelope.
 /// Returns (db, envelope) for common test scenarios.
+///
+/// # Errors
+/// Returns an error if database setup or envelope creation fails.
 pub async fn setup_with_envelope() -> Result<(DatabaseConnection, entities::envelope::Model)> {
     let db = setup_test_db().await?;
     let envelope = create_test_envelope(&db, "Test Envelope").await?;
@@ -159,6 +183,9 @@ pub async fn setup_with_envelope() -> Result<(DatabaseConnection, entities::enve
 
 /// Sets up a complete test environment with envelope and product.
 /// Returns (db, envelope, product) for product-related tests.
+///
+/// # Errors
+/// Returns an error if database setup, envelope creation, or product creation fails.
 pub async fn setup_with_product() -> Result<(
     DatabaseConnection,
     entities::envelope::Model,
