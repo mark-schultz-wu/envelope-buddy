@@ -6,7 +6,10 @@
 mod inner {
     #![allow(missing_docs)]
 
-    use crate::{bot::BotData, errors::{Error, Result}};
+    use crate::{
+        bot::BotData,
+        errors::{Error, Result},
+    };
 
     /// Responds with "Pong!" to test bot connectivity.
     ///

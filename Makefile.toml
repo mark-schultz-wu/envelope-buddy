@@ -1,0 +1,90 @@
+# EnvelopeBuddy Makefile for cargo-make
+# Install with: cargo install cargo-make
+# Usage: cargo make <task>
+
+[config]
+default_to_workspace = false
+
+[env]
+PI_HOST = { value = "rp", condition = { env_not_set = ["PI_HOST"] } }
+PI_DIR = { value = "~/envelope_buddy_app/bin", condition = { env_not_set = ["PI_DIR"] } }
+SERVICE_NAME = "envelope_buddy.service"
+TARGET = "aarch64-unknown-linux-gnu"
+
+# Cross-compile for Raspberry Pi
+[tasks.build-pi]
+description = "Cross-compile for Raspberry Pi (ARM64)"
+command = "cross"
+args = ["build", "--release", "--target", "${TARGET}"]
+
+# Alias for build-pi
+[tasks.pi]
+alias = "build-pi"
+
+# Stop remote service
+[tasks.stop-service]
+description = "Stop the remote service on Pi"
+command = "ssh"
+args = ["${PI_HOST}", "sudo systemctl stop ${SERVICE_NAME} 2>/dev/null || true"]
+
+# Copy binary to Pi
+[tasks.copy-binary]
+description = "Copy binary to Pi"
+dependencies = ["build-pi"]
+command = "scp"
+args = [
+    "target/${TARGET}/release/envelope-buddy",
+    "${PI_HOST}:${PI_DIR}/"
+]
+
+# Start remote service
+[tasks.start-service]
+description = "Start the remote service on Pi"
+command = "ssh"
+args = ["${PI_HOST}", "sudo systemctl start ${SERVICE_NAME}"]
+
+# Check service status
+[tasks.check-service]
+description = "Check if service is running"
+command = "ssh"
+args = ["${PI_HOST}", "sudo systemctl is-active ${SERVICE_NAME}"]
+
+# Full deployment workflow
+[tasks.deploy]
+description = "Full deployment: build, stop, copy, start"
+dependencies = ["build-pi"]
+run_task = { name = [
+    "stop-service",
+    "copy-binary",
+    "start-service",
+    "check-service"
+], parallel = false }
+
+# View logs from Pi
+[tasks.logs]
+description = "View live logs from Pi"
+command = "ssh"
+args = ["${PI_HOST}", "sudo journalctl -u ${SERVICE_NAME} -f"]
+
+# View recent logs
+[tasks.logs-recent]
+description = "View recent logs from Pi (last 50 lines)"
+command = "ssh"
+args = ["${PI_HOST}", "sudo journalctl -u ${SERVICE_NAME} -n 50"]
+
+# Check service status with details
+[tasks.status]
+description = "Check service status on Pi"
+command = "ssh"
+args = ["${PI_HOST}", "sudo systemctl status ${SERVICE_NAME}"]
+
+# Restart service (without rebuilding)
+[tasks.restart]
+description = "Restart service on Pi (no rebuild)"
+run_task = { name = ["stop-service", "start-service"], parallel = false }
+
+# Clean build artifacts
+[tasks.clean]
+description = "Clean build artifacts"
+command = "cargo"
+args = ["clean"]

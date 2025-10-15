@@ -36,16 +36,21 @@ pub async fn create_connection() -> Result<DatabaseConnection> {
 /// This function uses the `DeriveEntityModel` macros to automatically generate proper SQL
 /// statements for table creation, ensuring the database schema matches the Rust struct definitions.
 /// It creates tables for envelopes, products, transactions, and system state.
+/// Uses `IF NOT EXISTS` to safely run on existing databases (idempotent).
 pub async fn create_tables(db: &DatabaseConnection) -> Result<()> {
     // Use SeaORM's proper table creation using Schema::create_table_from_entity
     let builder = db.get_database_backend();
     let schema = Schema::new(builder);
 
-    // Create tables using SeaORM's schema generation
-    let envelope_table = schema.create_table_from_entity(Envelope);
-    let product_table = schema.create_table_from_entity(Product);
-    let transaction_table = schema.create_table_from_entity(Transaction);
-    let system_state_table = schema.create_table_from_entity(SystemState);
+    // Create tables using SeaORM's schema generation with IF NOT EXISTS
+    let mut envelope_table = schema.create_table_from_entity(Envelope);
+    envelope_table.if_not_exists();
+    let mut product_table = schema.create_table_from_entity(Product);
+    product_table.if_not_exists();
+    let mut transaction_table = schema.create_table_from_entity(Transaction);
+    transaction_table.if_not_exists();
+    let mut system_state_table = schema.create_table_from_entity(SystemState);
+    system_state_table.if_not_exists();
 
     db.execute(builder.build(&envelope_table)).await?;
     db.execute(builder.build(&product_table)).await?;

@@ -59,7 +59,8 @@ mod inner {
             return Ok(());
         }
         if total_price.is_nan() || total_price.is_infinite() {
-            ctx.say("❌ Invalid total price: must be a valid number").await?;
+            ctx.say("❌ Invalid total price: must be a valid number")
+                .await?;
             return Ok(());
         }
         if total_price < 0.0 {
@@ -67,7 +68,8 @@ mod inner {
             return Ok(());
         }
         if qty_value.is_nan() || qty_value.is_infinite() {
-            ctx.say("❌ Invalid quantity: must be a valid number").await?;
+            ctx.say("❌ Invalid quantity: must be a valid number")
+                .await?;
             return Ok(());
         }
         if qty_value <= 0.0 {
@@ -158,13 +160,12 @@ mod inner {
         // Fetch envelope names for each product
         let mut embed_fields = Vec::new();
         for prod in products {
-            let envelope_name = if let Ok(Some(env)) =
-                envelope::get_envelope_by_id(db, prod.envelope_id).await
-            {
-                env.name
-            } else {
-                "Unknown Envelope".to_string()
-            };
+            let envelope_name =
+                if let Ok(Some(env)) = envelope::get_envelope_by_id(db, prod.envelope_id).await {
+                    env.name
+                } else {
+                    "Unknown Envelope".to_string()
+                };
 
             let field_name = format!("{} (${:.2})", prod.name, prod.price);
             let field_value = format!("Linked to: {envelope_name}");
@@ -199,7 +200,8 @@ mod inner {
         let qty_value = quantity.unwrap_or(1.0);
 
         if total_price.is_nan() || total_price.is_infinite() {
-            ctx.say("❌ Invalid total price: must be a valid number").await?;
+            ctx.say("❌ Invalid total price: must be a valid number")
+                .await?;
             return Ok(());
         }
         if total_price < 0.0 {
@@ -207,7 +209,8 @@ mod inner {
             return Ok(());
         }
         if qty_value.is_nan() || qty_value.is_infinite() {
-            ctx.say("❌ Invalid quantity: must be a valid number").await?;
+            ctx.say("❌ Invalid quantity: must be a valid number")
+                .await?;
             return Ok(());
         }
         if qty_value <= 0.0 {
@@ -220,8 +223,7 @@ mod inner {
 
         // Find the product by name
         let Some(product) = product::get_product_by_name(db, &name).await? else {
-            ctx.say(&format!("❌ Product '{name}' not found."))
-                .await?;
+            ctx.say(&format!("❌ Product '{name}' not found.")).await?;
             return Ok(());
         };
 
@@ -261,8 +263,7 @@ mod inner {
 
         // Find the product by name
         let Some(product) = product::get_product_by_name(db, &name).await? else {
-            ctx.say(&format!("❌ Product '{name}' not found."))
-                .await?;
+            ctx.say(&format!("❌ Product '{name}' not found.")).await?;
             return Ok(());
         };
 
@@ -285,7 +286,8 @@ mod inner {
     /// Records an expense by using a predefined product.
     ///
     /// This command deducts the total cost (unit price * quantity) of the specified
-    /// product from the appropriate envelope.
+    /// product from the appropriate envelope. If a user is specified, the expense
+    /// is recorded for that user (useful for one partner recording expenses for the other).
     #[poise::command(slash_command)]
     pub async fn use_product(
         ctx: poise::Context<'_, BotData, Error>,
@@ -293,8 +295,10 @@ mod inner {
         #[autocomplete = "autocomplete::autocomplete_product_name"]
         name: String,
         #[description = "Quantity of the product (defaults to 1)"] quantity: Option<i64>,
+        #[description = "Optional: user ID to record the expense for"] user: Option<String>,
     ) -> Result<()> {
-        let author_id_str = ctx.author().id.to_string();
+        let author_id = ctx.author().id.to_string();
+        let target_user_id = user.as_ref().unwrap_or(&author_id);
         let quantity = quantity.unwrap_or(1);
 
         if quantity <= 0 {
@@ -306,13 +310,12 @@ mod inner {
 
         // 1. Fetch the product
         let Some(prod) = product::get_product_by_name(db, &name).await? else {
-            ctx.say(&format!("❌ Product '{name}' not found."))
-                .await?;
+            ctx.say(&format!("❌ Product '{name}' not found.")).await?;
             return Ok(());
         };
 
         // 2. Determine the target envelope for spending
-        let target_envelope = resolve_product_envelope(ctx, db, &prod, &author_id_str).await?;
+        let target_envelope = resolve_product_envelope(ctx, db, &prod, target_user_id).await?;
 
         // 3. Calculate cost and warn about overdraft if needed
         // Cast is safe: for quantities < 2^53, no precision loss occurs in f64
@@ -321,13 +324,20 @@ mod inner {
         check_and_warn_overdraft(ctx, &target_envelope, total_cost).await?;
 
         // 4. Create the transaction
-        let transaction_description = format!("Product: {} (x{})", prod.name, quantity);
+        let transaction_description = if user.is_some() {
+            format!(
+                "Product: {} (x{}) - recorded by {}",
+                prod.name, quantity, author_id
+            )
+        } else {
+            format!("Product: {} (x{})", prod.name, quantity)
+        };
         transaction::create_transaction(
             db,
             target_envelope.id,
             -total_cost,
             transaction_description,
-            author_id_str,
+            target_user_id.to_string(),
             Some(ctx.id().to_string()),
             "use_product".to_string(),
         )
@@ -346,7 +356,8 @@ mod inner {
         prod: &crate::entities::product::Model,
         author_id: &str,
     ) -> Result<crate::entities::envelope::Model> {
-        let Some(template_envelope) = envelope::get_envelope_by_id(db, prod.envelope_id).await? else {
+        let Some(template_envelope) = envelope::get_envelope_by_id(db, prod.envelope_id).await?
+        else {
             ctx.say(&format!(
                 "❌ Error: The envelope linked to product '{}' is missing or inactive.",
                 prod.name
@@ -440,7 +451,10 @@ mod inner {
             )
             .field(
                 format!("{balance_emoji} Balance"),
-                format!("${:.2} / ${:.2}", final_envelope.balance, final_envelope.allocation),
+                format!(
+                    "${:.2} / ${:.2}",
+                    final_envelope.balance, final_envelope.allocation
+                ),
                 true,
             )
             .field("Progress", progress_bar, false);

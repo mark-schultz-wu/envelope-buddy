@@ -29,14 +29,14 @@ pub enum Error {
     #[error("Envelope not found: {name}")]
     EnvelopeNotFound {
         /// Name of the envelope that wasn't found
-        name: String
+        name: String,
     },
 
     /// Requested product was not found in the database
     #[error("Product not found: {name}")]
     ProductNotFound {
         /// Name of the product that wasn't found
-        name: String
+        name: String,
     },
 
     /// Transaction would result in negative balance
@@ -45,28 +45,28 @@ pub enum Error {
         /// Current envelope balance
         current: f64,
         /// Amount required for the transaction
-        required: f64
+        required: f64,
     },
 
     /// Transaction amount is invalid (e.g., zero, NaN, infinity)
     #[error("Invalid amount: {amount}")]
     InvalidAmount {
         /// The invalid amount value
-        amount: f64
+        amount: f64,
     },
 
     /// Referenced user was not found
     #[error("User not found: {user_id}")]
     UserNotFound {
         /// Discord user ID that wasn't found
-        user_id: String
+        user_id: String,
     },
 
     /// Configuration or system state error
     #[error("Configuration error: {message}")]
     Config {
         /// Description of the configuration error
-        message: String
+        message: String,
     },
 }
 

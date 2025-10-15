@@ -10,7 +10,7 @@ use crate::{
     entities::{Envelope, transaction},
     errors::{Error, Result},
 };
-use sea_orm::{QueryOrder, Set, prelude::*, TransactionTrait};
+use sea_orm::{QueryOrder, Set, TransactionTrait, prelude::*};
 
 /// Creates a new transaction and automatically updates the envelope balance.
 ///
@@ -154,7 +154,8 @@ pub async fn delete_transaction(db: &DatabaseConnection, transaction_id: i64) ->
     transaction.delete(&txn).await?;
 
     // Atomically update the balance by reversing the transaction amount
-    crate::core::envelope::update_envelope_balance_atomic(&txn, envelope_id, amount_to_reverse).await?;
+    crate::core::envelope::update_envelope_balance_atomic(&txn, envelope_id, amount_to_reverse)
+        .await?;
 
     // Commit the transaction
     txn.commit().await?;
@@ -500,7 +501,7 @@ mod tests {
         let (db, envelope) = setup_with_envelope().await?;
 
         // First add some funds so we can spend
-        crate::core::envelope::update_envelope_balance(&db, envelope.id, 100.0).await?;
+        crate::core::envelope::update_envelope_balance_atomic(&db, envelope.id, 100.0).await?;
 
         // Create spend transaction
         let spend = create_custom_transaction(

@@ -36,7 +36,8 @@ mod inner {
             return Ok(());
         }
         if amount <= 0.0 {
-            ctx.say("❌ Invalid amount: must be greater than zero").await?;
+            ctx.say("❌ Invalid amount: must be greater than zero")
+                .await?;
             return Ok(());
         }
 
@@ -118,7 +119,8 @@ mod inner {
             return Ok(());
         }
         if amount <= 0.0 {
-            ctx.say("❌ Invalid amount: must be greater than zero").await?;
+            ctx.say("❌ Invalid amount: must be greater than zero")
+                .await?;
             return Ok(());
         }
 
@@ -166,7 +168,6 @@ mod inner {
 
         Ok(())
     }
-
 }
 
 // Re-export all commands

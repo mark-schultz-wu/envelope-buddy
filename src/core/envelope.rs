@@ -70,6 +70,29 @@ pub async fn get_envelope_by_id(
         .map_err(Into::into)
 }
 
+/// Gets all distinct categories from active envelopes.
+///
+/// This function is used for autocomplete suggestions, returning only categories
+/// that are currently in use by non-deleted envelopes.
+pub async fn get_all_categories(db: &DatabaseConnection) -> Result<Vec<String>> {
+    let envelopes = Envelope::find()
+        .filter(envelope::Column::IsDeleted.eq(false))
+        .all(db)
+        .await?;
+
+    // Extract unique categories
+    let mut categories: Vec<String> = envelopes
+        .into_iter()
+        .map(|env| env.category)
+        .collect();
+
+    // Remove duplicates and sort
+    categories.sort();
+    categories.dedup();
+
+    Ok(categories)
+}
+
 /// Creates a new envelope with the specified parameters, performing input validation.
 ///
 /// This function validates that the name is not empty, the allocation is non-negative,
@@ -134,15 +157,8 @@ where
 {
     use sea_orm::sea_query::Expr;
 
-    // First verify the envelope exists
-    let _envelope = Envelope::find_by_id(envelope_id)
-        .one(db)
-        .await?
-        .ok_or_else(|| Error::EnvelopeNotFound {
-            name: envelope_id.to_string(),
-        })?;
-
     // Perform atomic update: balance = balance + amount_delta
+    // If envelope doesn't exist, this updates 0 rows (which is fine - we check below)
     Envelope::update_many()
         .col_expr(
             envelope::Column::Balance,
@@ -152,7 +168,8 @@ where
         .exec(db)
         .await?;
 
-    // Return the updated envelope
+    // Fetch and return the updated envelope
+    // This will error if envelope doesn't exist (was deleted or never existed)
     Envelope::find_by_id(envelope_id)
         .one(db)
         .await?
@@ -161,25 +178,6 @@ where
         })
 }
 
-/// Legacy wrapper for backwards compatibility with tests that pass absolute balance values.
-/// New code should use `update_envelope_balance_atomic` with amount deltas instead.
-#[doc(hidden)]
-pub async fn update_envelope_balance(
-    db: &DatabaseConnection,
-    envelope_id: i64,
-    new_balance: f64,
-) -> Result<envelope::Model> {
-    // Calculate the delta from the current balance
-    let envelope = Envelope::find_by_id(envelope_id)
-        .one(db)
-        .await?
-        .ok_or_else(|| Error::EnvelopeNotFound {
-            name: envelope_id.to_string(),
-        })?;
-
-    let delta = new_balance - envelope.balance;
-    update_envelope_balance_atomic(db, envelope_id, delta).await
-}
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -334,20 +332,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_envelope_balance_integration() -> Result<()> {
+    async fn test_update_envelope_balance_atomic() -> Result<()> {
         let db = setup_test_db().await?;
 
-        // Create an envelope
+        // Create an envelope (starts at 0.0 balance)
         let envelope = create_test_envelope(&db, "Test Envelope").await?;
+        assert_eq!(envelope.balance, 0.0);
 
-        // Update the balance
-        let updated_envelope = update_envelope_balance(&db, envelope.id, 75.0).await?;
+        // Add 75.0 to the balance
+        let updated_envelope = update_envelope_balance_atomic(&db, envelope.id, 75.0).await?;
         assert_eq!(updated_envelope.balance, 75.0);
         assert_eq!(updated_envelope.id, envelope.id);
 
-        // Verify the update persisted
-        let retrieved = Envelope::find_by_id(envelope.id).one(&db).await?.unwrap();
-        assert_eq!(retrieved.balance, 75.0);
+        // Add another 25.0 (should be 100.0 total)
+        let updated_again = update_envelope_balance_atomic(&db, envelope.id, 25.0).await?;
+        assert_eq!(updated_again.balance, 100.0);
+
+        // Subtract 30.0 (should be 70.0 total)
+        let updated_final = update_envelope_balance_atomic(&db, envelope.id, -30.0).await?;
+        assert_eq!(updated_final.balance, 70.0);
 
         Ok(())
     }
@@ -357,7 +360,7 @@ mod tests {
         let db = setup_test_db().await?;
 
         // Try to update non-existent envelope
-        let result = update_envelope_balance(&db, 999, 75.0).await;
+        let result = update_envelope_balance_atomic(&db, 999, 75.0).await;
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -479,8 +482,8 @@ mod tests {
         // Initial balance should be 0
         assert_eq!(envelope.balance, 0.0);
 
-        // Update balance
-        let updated = update_envelope_balance(&db, envelope.id, 123.45).await?;
+        // Update balance by adding 123.45
+        let updated = update_envelope_balance_atomic(&db, envelope.id, 123.45).await?;
         assert_eq!(updated.balance, 123.45);
 
         // Verify persistence
@@ -510,6 +513,40 @@ mod tests {
         // Verify persistence
         let retrieved = Envelope::find_by_id(envelope.id).one(&db).await?.unwrap();
         assert_eq!(retrieved.allocation, 250.75);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_all_categories() -> Result<()> {
+        let db = setup_test_db().await?;
+
+        // Initially no envelopes, should return empty
+        let categories = get_all_categories(&db).await?;
+        assert_eq!(categories.len(), 0);
+
+        // Create envelopes with different categories
+        create_custom_envelope(&db, "Groceries", None, "necessary", 500.0, false, false).await?;
+        create_custom_envelope(&db, "Entertainment", None, "quality_of_life", 100.0, false, false).await?;
+        create_custom_envelope(&db, "Utilities", None, "necessary", 200.0, false, false).await?;
+        create_custom_envelope(&db, "Games", None, "quality_of_life", 50.0, true, false).await?;
+
+        // Should return 2 unique categories, sorted alphabetically
+        let categories = get_all_categories(&db).await?;
+        assert_eq!(categories.len(), 2);
+        assert_eq!(categories[0], "necessary");
+        assert_eq!(categories[1], "quality_of_life");
+
+        // Create deleted envelope - should not be included
+        let deleted = create_custom_envelope(&db, "Old", None, "obsolete", 10.0, false, false).await?;
+        let mut deleted_active: envelope::ActiveModel = deleted.into();
+        deleted_active.is_deleted = Set(true);
+        deleted_active.update(&db).await?;
+
+        // Should still return only 2 categories (deleted one excluded)
+        let categories = get_all_categories(&db).await?;
+        assert_eq!(categories.len(), 2);
+        assert!(!categories.contains(&"obsolete".to_string()));
 
         Ok(())
     }

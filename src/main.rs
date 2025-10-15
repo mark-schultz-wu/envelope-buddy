@@ -1,9 +1,9 @@
-use envelope_buddy::{bot, config, core::envelope, errors::Error};
 use dotenvy::dotenv;
+use envelope_buddy::{bot, config, core::envelope, errors::Error};
 use sea_orm::{Database, DatabaseConnection};
 use std::env;
 use tracing::{error, info, warn};
-use tracing_subscriber::{fmt, EnvFilter, prelude::*};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -35,10 +35,9 @@ async fn main() -> Result<(), Error> {
     seed_envelopes(&db).await?;
 
     // Get Discord bot token
-    let token = env::var("DISCORD_BOT_TOKEN")
-        .map_err(|_| Error::Config {
-            message: "DISCORD_BOT_TOKEN environment variable not set".to_string(),
-        })?;
+    let token = env::var("DISCORD_BOT_TOKEN").map_err(|_| Error::Config {
+        message: "DISCORD_BOT_TOKEN environment variable not set".to_string(),
+    })?;
 
     info!("Starting Discord bot...");
     run_bot(token, db).await?;
@@ -48,8 +47,7 @@ async fn main() -> Result<(), Error> {
 
 /// Initializes the tracing subscriber for logging
 fn init_tracing() -> Result<(), Error> {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -145,10 +143,7 @@ async fn on_error(error: poise::FrameworkError<'_, bot::BotData, Error>) {
         }
         poise::FrameworkError::Command { error, ctx, .. } => {
             error!("Error in command `{}`: {:?}", ctx.command().name, error);
-            if let Err(e) = ctx
-                .say(format!("❌ An error occurred: {}", error))
-                .await
-            {
+            if let Err(e) = ctx.say(format!("❌ An error occurred: {}", error)).await {
                 error!("Failed to send error message: {}", e);
             }
         }
@@ -171,12 +166,18 @@ async fn seed_envelopes(db: &DatabaseConnection) -> Result<(), Error> {
     let config = match config::envelopes::load_default_config() {
         Ok(cfg) => cfg,
         Err(e) => {
-            warn!("Could not load config.toml, skipping envelope seeding: {}", e);
+            warn!(
+                "Could not load config.toml, skipping envelope seeding: {}",
+                e
+            );
             return Ok(());
         }
     };
 
-    info!("Seeding {} envelopes from config.toml...", config.envelopes.len());
+    info!(
+        "Seeding {} envelopes from config.toml...",
+        config.envelopes.len()
+    );
 
     for env_config in &config.envelopes {
         // Check if envelope already exists

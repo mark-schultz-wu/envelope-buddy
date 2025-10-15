@@ -9,9 +9,11 @@ mod inner {
 
     use crate::{
         bot::{BotData, handlers::autocomplete},
+        config,
         core::{envelope, monthly, report},
         errors::{Error, Result},
     };
+    use chrono::Datelike;
     use sea_orm::ActiveModelTrait;
     use std::fmt::Write;
 
@@ -20,8 +22,11 @@ mod inner {
     /// This command generates a detailed report showing current balances, allocations,
     /// and spending progress for all envelopes in the system. The report includes
     /// visual progress indicators and recent transaction information.
+    #[allow(clippy::too_many_lines)] // Complex reporting logic with status calculations
     #[poise::command(slash_command, prefix_command)]
     pub async fn report(ctx: poise::Context<'_, BotData, Error>) -> Result<()> {
+        use poise::serenity_prelude as serenity;
+
         let db = &ctx.data().database;
 
         // Get all active envelopes
@@ -33,45 +38,130 @@ mod inner {
             return Ok(());
         }
 
-        // Build report message
-        let mut report_text = String::from("📊 **Envelope Budget Report**\n\n");
+        // Get current date info for embed description
+        let now = chrono::Local::now();
 
-        for env in envelopes {
+        // Calculate days in current month
+        // Note: from_ymd_opt only returns None for invalid dates (e.g., Feb 30).
+        // Since we're using month=1-12 from DateTime and day=1, these are always valid.
+        #[allow(clippy::expect_used)] // First day of any valid month/year is always valid
+        let next_month_first = if now.month() == 12 {
+            chrono::NaiveDate::from_ymd_opt(now.year() + 1, 1, 1)
+        } else {
+            chrono::NaiveDate::from_ymd_opt(now.year(), now.month() + 1, 1)
+        }
+        .expect("First day of next month is always valid");
+
+        #[allow(clippy::expect_used)] // First day of current month from DateTime is always valid
+        let current_month_first = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1)
+            .expect("First day of current month is always valid");
+
+        let days_in_month = next_month_first
+            .signed_duration_since(current_month_first)
+            .num_days();
+
+        let current_day = i64::from(now.day());
+
+        // Build embed fields - one field per envelope
+        let mut embed_fields = Vec::new();
+
+        for env in &envelopes {
             let progress = report::calculate_progress(env.balance, env.allocation);
             let progress_bar = report::format_progress_bar(progress, Some(10));
 
-            writeln!(
-                &mut report_text,
-                "**{}** {}",
-                env.name,
-                if env.is_individual {
-                    "(Individual)"
+            // Calculate expected pace based on day of month
+            #[allow(clippy::cast_precision_loss)]
+            // Days in month is small, precision loss negligible
+            let expected_percent = (current_day as f64 / days_in_month as f64) * 100.0;
+            let spent_amount = env.allocation - env.balance;
+            let spent_percent = if env.allocation > 0.0 {
+                (spent_amount / env.allocation) * 100.0
+            } else {
+                0.0
+            };
+
+            // Status indicator: green if on track, yellow if slightly over, red if significantly over
+            let status_emoji = if spent_percent <= expected_percent {
+                "🟢" // On track or under budget
+            } else if spent_percent <= expected_percent + 20.0 {
+                "🟡" // Slightly over pace
+            } else {
+                "🔴" // Significantly over pace
+            };
+
+            // Build field name: "name (User)" or "name (Shared)"
+            let field_name = if env.is_individual {
+                if let Some(ref uid) = env.user_id {
+                    // First try to get nickname from .env config
+                    let user_name = if let Some(nickname) = config::users::get_nickname(uid) {
+                        nickname
+                    } else {
+                        // Fallback to Discord username
+                        if let Ok(user_id_val) = uid.parse::<u64>() {
+                            let user_id = serenity::UserId::new(user_id_val);
+                            if let Ok(user) = user_id.to_user(ctx.serenity_context()).await {
+                                user.name
+                            } else {
+                                format!("User {uid}")
+                            }
+                        } else {
+                            format!("User {uid}")
+                        }
+                    };
+                    format!("{} ({})", env.name, user_name)
                 } else {
-                    "(Shared)"
-                },
-            )?;
-            writeln!(
-                &mut report_text,
-                "  Balance: ${:.2} / ${:.2} | Category: {}",
-                env.balance, env.allocation, env.category
-            )?;
-            writeln!(
-                &mut report_text,
-                "  Progress: {progress_bar} {progress:.1}%",
-            )?;
-            writeln!(
-                &mut report_text,
-                "  Rollover: {}",
-                if env.rollover {
-                    "✅ Enabled"
-                } else {
-                    "❌ Disabled"
+                    format!("{} (Individual)", env.name)
                 }
+            } else {
+                format!("{} (Shared)", env.name)
+            };
+
+            let mut field_value = String::new();
+            writeln!(
+                &mut field_value,
+                "**Balance:** ${:.2} / ${:.2}",
+                env.balance, env.allocation
             )?;
-            writeln!(&mut report_text)?;
+            writeln!(
+                &mut field_value,
+                "**Spent:** ${spent_amount:.2} ({spent_percent:.1}%)"
+            )?;
+            #[allow(clippy::cast_precision_loss)]
+            // Days in month is small, precision loss negligible
+            let expected_spent = env.allocation * (current_day as f64 / days_in_month as f64);
+            writeln!(
+                &mut field_value,
+                "**Expected Pace:** ${expected_spent:.2} ({expected_percent:.1}%)"
+            )?;
+            writeln!(
+                &mut field_value,
+                "**Progress:** {progress_bar} {progress:.1}%"
+            )?;
+            writeln!(&mut field_value, "**Status:** {status_emoji}")?;
+
+            embed_fields.push((field_name, field_value, false)); // false = not inline
         }
 
-        ctx.say(report_text).await?;
+        // Create embed
+        let report_embed = serenity::CreateEmbed::default()
+            .title("📊 Full Envelope Report")
+            .description(format!(
+                "As of: {} (Day {}/{} of month)",
+                now.format("%Y-%m-%d"),
+                now.day(),
+                days_in_month
+            ))
+            .color(0x0034_98DB) // Blue color
+            .fields(embed_fields)
+            .footer(serenity::CreateEmbedFooter::new(format!(
+                "EnvelopeBuddy v0.2.0 | {} envelope{}",
+                envelopes.len(),
+                if envelopes.len() == 1 { "" } else { "s" }
+            )));
+
+        ctx.send(poise::CreateReply::default().embed(report_embed))
+            .await?;
+
         Ok(())
     }
 

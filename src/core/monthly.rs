@@ -11,7 +11,7 @@ use crate::{
     errors::{Error, Result},
 };
 use chrono::{Datelike, NaiveDate, Utc};
-use sea_orm::{Set, prelude::*, TransactionTrait};
+use sea_orm::{Set, TransactionTrait, prelude::*};
 
 const LAST_MONTHLY_UPDATE_KEY: &str = "last_monthly_update";
 
@@ -346,8 +346,8 @@ mod tests {
         )
         .await?;
 
-        // Set initial balance
-        crate::core::envelope::update_envelope_balance(&db, envelope.id, 50.0).await?;
+        // Set initial balance to 50.0
+        crate::core::envelope::update_envelope_balance_atomic(&db, envelope.id, 50.0).await?;
 
         // Process monthly update
         let result = process_monthly_updates(&db).await?;
@@ -390,7 +390,7 @@ mod tests {
         .await?;
 
         // Set initial balance (different from allocation)
-        crate::core::envelope::update_envelope_balance(&db, envelope.id, 75.0).await?;
+        crate::core::envelope::update_envelope_balance_atomic(&db, envelope.id, 75.0).await?;
 
         // Process monthly update
         let result = process_monthly_updates(&db).await?;
@@ -429,9 +429,9 @@ mod tests {
             create_custom_envelope(&db, "Rollover 2", None, "savings", 50.0, false, true).await?;
 
         // Set initial balances
-        crate::core::envelope::update_envelope_balance(&db, env1.id, 30.0).await?;
-        crate::core::envelope::update_envelope_balance(&db, env2.id, 150.0).await?;
-        crate::core::envelope::update_envelope_balance(&db, env3.id, 20.0).await?;
+        crate::core::envelope::update_envelope_balance_atomic(&db, env1.id, 30.0).await?;
+        crate::core::envelope::update_envelope_balance_atomic(&db, env2.id, 150.0).await?;
+        crate::core::envelope::update_envelope_balance_atomic(&db, env3.id, 20.0).await?;
 
         // Process monthly update
         let result = process_monthly_updates(&db).await?;
@@ -577,7 +577,7 @@ mod tests {
         .await?;
 
         // Set negative balance (overspent)
-        crate::core::envelope::update_envelope_balance(&db, envelope.id, -25.0).await?;
+        crate::core::envelope::update_envelope_balance_atomic(&db, envelope.id, -25.0).await?;
 
         // Process monthly update
         let result = process_monthly_updates(&db).await?;

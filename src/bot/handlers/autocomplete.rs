@@ -100,40 +100,33 @@ pub async fn autocomplete_product_name(
 
 /// Provides autocomplete suggestions for category names.
 ///
-/// This function returns common envelope category names to help users
-/// organize their envelopes consistently. Categories are predefined common
-/// budget categories.
+/// This function queries the database for all distinct categories currently in use
+/// by active envelopes, allowing users to maintain consistency while also being
+/// flexible to add new categories as needed.
 ///
 /// # Arguments
-/// * `_ctx` - The poise context (unused, but required by poise signature)
+/// * `ctx` - The poise context containing the database connection
 /// * `partial` - The partial string the user has typed so far
 ///
 /// # Returns
 /// A vector of category names that match the partial input
-#[must_use]
-pub fn autocomplete_category(
-    _ctx: poise::Context<'_, BotData, Error>,
+pub async fn autocomplete_category(
+    ctx: poise::Context<'_, BotData, Error>,
     partial: &str,
 ) -> Vec<String> {
-    let categories = [
-        "Bills",
-        "Entertainment",
-        "Food",
-        "Healthcare",
-        "Housing",
-        "Insurance",
-        "Personal",
-        "Savings",
-        "Transportation",
-        "Utilities",
-        "Other",
-    ];
+    let db = &ctx.data().database;
+
+    // Get all categories from existing envelopes
+    let Ok(categories) = envelope::get_all_categories(db).await else {
+        return Vec::new();
+    };
 
     let partial_lower = partial.to_lowercase();
 
+    // Filter categories that match the partial input
     categories
-        .iter()
+        .into_iter()
         .filter(|cat| cat.to_lowercase().contains(&partial_lower))
-        .map(|&cat| cat.to_string())
+        .take(25) // Discord autocomplete limit
         .collect()
 }

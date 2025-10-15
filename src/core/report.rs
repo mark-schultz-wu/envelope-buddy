@@ -120,14 +120,18 @@ pub fn format_progress_bar(progress_percent: f64, bar_length: Option<usize>) -> 
 
     // Cast safety: clamped_progress ∈ [0, 100], length is small (10-20).
     // Result is mathematically in [0, length], truncation/sign loss intentional for display.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
     let filled = ((clamped_progress / 100.0) * length as f64).round() as usize;
     let empty = length.saturating_sub(filled);
 
     let filled_str = "█".repeat(filled);
     let empty_str = "░".repeat(empty);
 
-    format!("[{filled_str}{empty_str}] {progress_percent:.1}%")
+    format!("[{filled_str}{empty_str}]")
 }
 
 /// Formats a transaction amount with appropriate sign and currency.
