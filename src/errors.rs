@@ -62,6 +62,26 @@ pub enum Error {
         user_id: String,
     },
 
+    /// Data corruption: Multiple shared envelopes have the same name
+    #[error(
+        "Data corruption: Found {count} shared envelopes with name '{name}'. Shared envelope names must be unique."
+    )]
+    DuplicateSharedEnvelope {
+        /// Name of the duplicated envelope
+        name: String,
+        /// Number of envelopes with this name
+        count: usize,
+    },
+
+    /// Individual envelope created without required user_id
+    #[error(
+        "Invalid envelope: Individual envelope '{name}' cannot have user_id=None. Individual envelopes must belong to a specific user."
+    )]
+    IndividualEnvelopeWithoutUser {
+        /// Name of the envelope
+        name: String,
+    },
+
     /// Configuration or system state error
     #[error("Configuration error: {message}")]
     Config {

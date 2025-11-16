@@ -124,7 +124,9 @@ mod inner {
             )?;
             writeln!(
                 &mut field_value,
-                "**Spent:** ${spent_amount:.2} ({spent_percent:.1}%)"
+                "**Spent:** ${:.2} ({:.1}%)",
+                spent_amount.abs(),
+                spent_percent.abs()
             )?;
             #[allow(clippy::cast_precision_loss)]
             // Days in month is small, precision loss negligible
@@ -133,11 +135,11 @@ mod inner {
                 &mut field_value,
                 "**Expected Pace:** ${expected_spent:.2} ({expected_percent:.1}%)"
             )?;
-            writeln!(
+            write!(
                 &mut field_value,
                 "**Progress:** {progress_bar} {progress:.1}%"
             )?;
-            writeln!(&mut field_value, "**Status:** {status_emoji}")?;
+            writeln!(&mut field_value, "\n**Status:** {status_emoji}")?;
 
             embed_fields.push((field_name, field_value, false)); // false = not inline
         }
@@ -181,7 +183,7 @@ mod inner {
         // Process monthly updates
         match monthly::process_monthly_updates(db).await? {
             Some(result) => {
-                let summary = monthly::format_monthly_update_summary(&result);
+                let summary = monthly::format_monthly_update_summary(&result)?;
                 ctx.say(format!(
                     "✅ **Monthly Update Complete!**\n\n```\n{summary}\n```",
                 ))
@@ -211,13 +213,13 @@ mod inner {
         let db = &ctx.data().database;
         let user_id = user.unwrap_or_else(|| ctx.author().id.to_string());
 
-        // Try to find the envelope
+        // Try to find the envelope - first check user's individual envelope, then shared
         let envelope = if let Some(env) =
             envelope::get_envelope_by_name_and_user(db, &envelope_name, &user_id).await?
         {
             Some(env)
         } else {
-            envelope::get_envelope_by_name(db, &envelope_name).await?
+            envelope::get_shared_envelope_by_name(db, &envelope_name).await?
         };
 
         let Some(envelope) = envelope else {
@@ -356,7 +358,7 @@ mod inner {
         let existing = if let Some(uid) = &user_id {
             envelope::get_envelope_by_name_and_user(db, &name, uid).await?
         } else {
-            envelope::get_envelope_by_name(db, &name).await?
+            envelope::get_shared_envelope_by_name(db, &name).await?
         };
 
         if existing.is_some() {
@@ -412,13 +414,13 @@ mod inner {
         let db = &ctx.data().database;
         let user_id = user.unwrap_or_else(|| ctx.author().id.to_string());
 
-        // Try to find the envelope
+        // Try to find the envelope - first check user's individual envelope, then shared
         let envelope = if let Some(env) =
             envelope::get_envelope_by_name_and_user(db, &name, &user_id).await?
         {
             Some(env)
         } else {
-            envelope::get_envelope_by_name(db, &name).await?
+            envelope::get_shared_envelope_by_name(db, &name).await?
         };
 
         let Some(envelope) = envelope else {
@@ -476,13 +478,13 @@ mod inner {
             }
         }
 
-        // Try to find the envelope
+        // Try to find the envelope - first check user's individual envelope, then shared
         let envelope = if let Some(env) =
             envelope::get_envelope_by_name_and_user(db, &name, &user_id).await?
         {
             Some(env)
         } else {
-            envelope::get_envelope_by_name(db, &name).await?
+            envelope::get_shared_envelope_by_name(db, &name).await?
         };
 
         let Some(envelope) = envelope else {

@@ -130,3 +130,38 @@ pub async fn autocomplete_category(
         .take(25) // Discord autocomplete limit
         .collect()
 }
+
+/// Provides autocomplete suggestions for Discord user IDs.
+///
+/// This function provides the command author's user ID as the primary suggestion
+/// since the user parameter defaults to "self" when not specified. This makes it
+/// easy for users to explicitly specify themselves or type a different user ID.
+///
+/// # Arguments
+/// * `ctx` - The poise context
+/// * `partial` - The partial string the user has typed so far
+///
+/// # Returns
+/// A vector of user ID strings - typically just the author's ID
+#[allow(clippy::unused_async)]
+pub async fn autocomplete_user(
+    ctx: poise::Context<'_, BotData, Error>,
+    partial: &str,
+) -> Vec<String> {
+    let author_id = ctx.author().id.to_string();
+
+    // If no partial input, suggest the author's ID (which is the default)
+    if partial.is_empty() {
+        return vec![author_id];
+    }
+
+    let partial_lower = partial.to_lowercase();
+
+    // If the author's ID matches, suggest it
+    if author_id.to_lowercase().contains(&partial_lower) {
+        vec![author_id]
+    } else {
+        // Allow them to type any user ID (e.g., for admin operations)
+        vec![partial.to_string()]
+    }
+}

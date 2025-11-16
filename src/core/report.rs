@@ -216,26 +216,26 @@ mod tests {
     #[test]
     fn test_format_progress_bar_full() {
         let bar = format_progress_bar(100.0, Some(10));
-        assert_eq!(bar, "[██████████] 100.0%");
+        assert_eq!(bar, "[██████████]");
     }
 
     #[test]
     fn test_format_progress_bar_half() {
         let bar = format_progress_bar(50.0, Some(10));
-        assert_eq!(bar, "[█████░░░░░] 50.0%");
+        assert_eq!(bar, "[█████░░░░░]");
     }
 
     #[test]
     fn test_format_progress_bar_zero() {
         let bar = format_progress_bar(0.0, Some(10));
-        assert_eq!(bar, "[░░░░░░░░░░] 0.0%");
+        assert_eq!(bar, "[░░░░░░░░░░]");
     }
 
     #[test]
     fn test_format_progress_bar_overspent() {
-        // Overspending is clamped to 0% in the bar
+        // Overspending is clamped to 0% in the bar (percentage display handled separately)
         let bar = format_progress_bar(-25.0, Some(10));
-        assert_eq!(bar, "[░░░░░░░░░░] -25.0%");
+        assert_eq!(bar, "[░░░░░░░░░░]");
     }
 
     #[test]

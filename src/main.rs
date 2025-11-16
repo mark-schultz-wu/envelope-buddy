@@ -31,8 +31,14 @@ async fn main() -> Result<(), Error> {
         return Err(e);
     }
 
-    // Seed initial envelopes from config.toml
-    seed_envelopes(&db).await?;
+    // Only seed envelopes if database is empty (fresh install)
+    let existing_envelopes = envelope::get_all_active_envelopes(&db).await?;
+    if existing_envelopes.is_empty() {
+        info!("Database is empty, seeding initial envelopes from config.toml");
+        seed_envelopes(&db).await?;
+    } else {
+        info!("Database already has {} envelopes, skipping seeding", existing_envelopes.len());
+    }
 
     // Get Discord bot token
     let token = env::var("DISCORD_BOT_TOKEN").map_err(|_| Error::Config {
@@ -180,23 +186,28 @@ async fn seed_envelopes(db: &DatabaseConnection) -> Result<(), Error> {
     );
 
     for env_config in &config.envelopes {
-        // Check if envelope already exists
-        let existing = envelope::get_envelope_by_name(db, &env_config.name).await?;
+        // Skip individual envelopes - they should be created by users dynamically
+        if env_config.is_individual {
+            info!("Skipping individual envelope '{}' - these are created by users", env_config.name);
+            continue;
+        }
+
+        // Check if shared envelope already exists
+        let existing = envelope::get_shared_envelope_by_name(db, &env_config.name).await?;
 
         if existing.is_some() {
             info!("Envelope '{}' already exists, skipping", env_config.name);
             continue;
         }
 
-        // Create the envelope
-        // Individual envelopes are created as templates (no user_id)
+        // Create the shared envelope
         match envelope::create_envelope(
             db,
             env_config.name.clone(),
-            None, // No user_id for template envelopes
+            None, // No user_id for shared envelopes
             env_config.category.clone(),
             env_config.allocation,
-            env_config.is_individual,
+            false, // Always false for shared envelopes
             env_config.rollover,
         )
         .await

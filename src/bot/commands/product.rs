@@ -86,7 +86,7 @@ mod inner {
         {
             Some(env)
         } else {
-            envelope::get_envelope_by_name(db, &envelope_name).await?
+            envelope::get_shared_envelope_by_name(db, &envelope_name).await?
         };
 
         let Some(envelope) = envelope else {
@@ -337,7 +337,7 @@ mod inner {
             target_envelope.id,
             -total_cost,
             transaction_description,
-            target_user_id.to_string(),
+            target_user_id.clone(),
             Some(ctx.id().to_string()),
             "use_product".to_string(),
         )
@@ -385,10 +385,9 @@ mod inner {
     ) -> Result<crate::entities::envelope::Model> {
         if let Some(user_env) =
             envelope::get_envelope_by_name_and_user(db, &template_envelope.name, author_id).await?
+            && user_env.user_id.as_deref() == Some(author_id)
         {
-            if user_env.user_id.as_deref() == Some(author_id) {
-                return Ok(user_env);
-            }
+            return Ok(user_env);
         }
 
         ctx.say(&format!(

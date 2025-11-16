@@ -25,23 +25,38 @@ pub async fn get_all_active_envelopes(db: &DatabaseConnection) -> Result<Vec<env
         .map_err(Into::into)
 }
 
-/// Finds a specific envelope by its name, returning None if not found or deleted.
+/// Finds a shared envelope by its name, returning None if not found or deleted.
 ///
-/// This function is used for envelope lookups when users reference envelopes by name
-/// in commands, and ensures that deleted envelopes are not accessible.
+/// This function looks for shared envelopes (where `is_individual = false` and `user_id IS NULL`).
+/// It will return an error if multiple shared envelopes with the same name exist,
+/// as this would indicate data corruption.
 ///
 /// # Errors
-/// Returns an error if the database query fails.
-pub async fn get_envelope_by_name(
+/// Returns an error if:
+/// - The database query fails
+/// - Multiple shared envelopes with the same name exist
+pub async fn get_shared_envelope_by_name(
     db: &DatabaseConnection,
     name: &str,
 ) -> Result<Option<envelope::Model>> {
-    Envelope::find()
+    let results = Envelope::find()
         .filter(envelope::Column::Name.eq(name))
         .filter(envelope::Column::IsDeleted.eq(false))
-        .one(db)
-        .await
-        .map_err(Into::into)
+        .filter(envelope::Column::IsIndividual.eq(false))
+        .filter(envelope::Column::UserId.is_null())
+        .all(db)
+        .await?;
+
+    let count = results.len();
+    let mut iter = results.into_iter();
+    match iter.next() {
+        Some(envelope) if count == 1 => Ok(Some(envelope)),
+        None => Ok(None),
+        Some(_) => Err(Error::DuplicateSharedEnvelope {
+            name: name.to_string(),
+            count,
+        }),
+    }
 }
 
 /// Finds an envelope by name and user ID, used for user-specific envelope lookups.
@@ -96,10 +111,7 @@ pub async fn get_all_categories(db: &DatabaseConnection) -> Result<Vec<String>> 
         .await?;
 
     // Extract unique categories
-    let mut categories: Vec<String> = envelopes
-        .into_iter()
-        .map(|env| env.category)
-        .collect();
+    let mut categories: Vec<String> = envelopes.into_iter().map(|env| env.category).collect();
 
     // Remove duplicates and sort
     categories.sort();
@@ -136,6 +148,13 @@ pub async fn create_envelope(
 
     if allocation < 0.0 {
         return Err(Error::InvalidAmount { amount: allocation });
+    }
+
+    // Individual envelopes MUST have a user_id
+    if is_individual && user_id.is_none() {
+        return Err(Error::IndividualEnvelopeWithoutUser {
+            name: name.trim().to_string(),
+        });
     }
 
     let envelope = envelope::ActiveModel {
@@ -281,20 +300,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_envelope_by_name_integration() -> Result<()> {
+    async fn test_get_shared_envelope_by_name_integration() -> Result<()> {
         let db = setup_test_db().await?;
 
-        // Create an envelope
+        // Create a shared envelope
         let created_envelope = create_test_envelope(&db, "Test Envelope").await?;
 
         // Test finding it by name
-        let found_envelope = get_envelope_by_name(&db, "Test Envelope").await?;
+        let found_envelope = get_shared_envelope_by_name(&db, "Test Envelope").await?;
         assert!(found_envelope.is_some());
         assert_eq!(found_envelope.unwrap().id, created_envelope.id);
 
         // Test finding non-existent envelope
-        let not_found = get_envelope_by_name(&db, "Non-existent").await?;
+        let not_found = get_shared_envelope_by_name(&db, "Non-existent").await?;
         assert!(not_found.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_shared_envelope_by_name_detects_duplicates() -> Result<()> {
+        let db = setup_test_db().await?;
+
+        // Manually create two shared envelopes with the same name to simulate data corruption
+        // (This shouldn't happen in normal operation due to application-level constraints)
+        create_test_envelope(&db, "Duplicate").await?;
+        create_test_envelope(&db, "Duplicate").await?;
+
+        // Attempting to get the envelope should return a DuplicateSharedEnvelope error
+        let result = get_shared_envelope_by_name(&db, "Duplicate").await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::DuplicateSharedEnvelope { name, count: 2 } if name == "Duplicate"
+        ));
 
         Ok(())
     }
@@ -409,7 +448,7 @@ mod tests {
         envelope_model.update(&db).await?;
 
         // Test that deleted envelope is not found by name
-        let not_found = get_envelope_by_name(&db, "Test Envelope").await?;
+        let not_found = get_shared_envelope_by_name(&db, "Test Envelope").await?;
         assert!(not_found.is_none());
 
         // Create active envelope
@@ -553,9 +592,18 @@ mod tests {
 
         // Create envelopes with different categories
         create_custom_envelope(&db, "Groceries", None, "necessary", 500.0, false, false).await?;
-        create_custom_envelope(&db, "Entertainment", None, "quality_of_life", 100.0, false, false).await?;
+        create_custom_envelope(
+            &db,
+            "Entertainment",
+            None,
+            "quality_of_life",
+            100.0,
+            false,
+            false,
+        )
+        .await?;
         create_custom_envelope(&db, "Utilities", None, "necessary", 200.0, false, false).await?;
-        create_custom_envelope(&db, "Games", None, "quality_of_life", 50.0, true, false).await?;
+        create_custom_envelope(&db, "Games", Some("alice".to_string()), "quality_of_life", 50.0, true, false).await?;
 
         // Should return 2 unique categories, sorted alphabetically
         let categories = get_all_categories(&db).await?;
@@ -564,7 +612,8 @@ mod tests {
         assert_eq!(categories[1], "quality_of_life");
 
         // Create deleted envelope - should not be included
-        let deleted = create_custom_envelope(&db, "Old", None, "obsolete", 10.0, false, false).await?;
+        let deleted =
+            create_custom_envelope(&db, "Old", None, "obsolete", 10.0, false, false).await?;
         let mut deleted_active: envelope::ActiveModel = deleted.into();
         deleted_active.is_deleted = Set(true);
         deleted_active.update(&db).await?;
@@ -573,6 +622,96 @@ mod tests {
         let categories = get_all_categories(&db).await?;
         assert_eq!(categories.len(), 2);
         assert!(!categories.contains(&"obsolete".to_string()));
+
+        Ok(())
+    }
+
+    /// Tests that ``create_envelope`` incorrectly allows individual envelopes with ``user_id=NULL``.
+    ///
+    /// This is a bug because individual envelopes MUST have a ``user_id``. The ``seed_envelopes``
+    /// function in main.rs creates envelopes from config.toml with:
+    /// - ``user_id`` = None (always)
+    /// - ``is_individual`` = ``env_config.is_individual`` (from config)
+    ///
+    /// When ``is_individual=true`` in the config, this creates invalid state.
+    ///
+    /// Expected behavior:
+    /// - Should reject envelopes where ``is_individual=true`` but ``user_id=None``
+    /// - OR have validation in ``create_envelope`` to prevent this invalid state
+    #[tokio::test]
+    async fn test_create_individual_envelope_without_user_id() -> Result<()> {
+        let db = setup_test_db().await?;
+
+        // Attempt to create an individual envelope with user_id=None
+        let result = create_envelope(
+            &db,
+            "game".to_string(),
+            None, // BUG: No user_id for an individual envelope!
+            "quality_of_life".to_string(),
+            80.0,
+            true, // is_individual = true
+            false,
+        )
+        .await;
+
+        // This should now fail with the new validation
+        match result {
+            Ok(envelope_model) => {
+                // BUG REPRODUCED: We successfully created an invalid envelope
+                assert!(envelope_model.is_individual);
+                assert_eq!(envelope_model.user_id, None);
+                return Err(crate::errors::Error::Config {
+                    message: format!(
+                        "BUG: Successfully created individual envelope '{}' with user_id=NULL. \
+                         This is invalid state - individual envelopes must have a user_id.",
+                        envelope_model.name
+                    ),
+                });
+            }
+            Err(crate::errors::Error::IndividualEnvelopeWithoutUser { name }) => {
+                // CORRECT: The function properly rejected the invalid envelope
+                assert_eq!(name, "game");
+            }
+            Err(other) => {
+                return Err(other);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Tests that individual envelopes are not returned by shared envelope queries.
+    ///
+    /// This test verifies that individual envelopes (with a valid ``user_id``)
+    /// are not returned by ``get_shared_envelope_by_name``.
+    #[tokio::test]
+    async fn test_individual_envelopes_not_returned_as_shared() -> Result<()> {
+        let db = setup_test_db().await?;
+
+        // Create a valid individual envelope with a user_id
+        let individual = create_envelope(
+            &db,
+            "individual_game".to_string(),
+            Some("alice".to_string()), // Valid user_id
+            "quality_of_life".to_string(),
+            80.0,
+            true, // is_individual = true
+            false,
+        )
+        .await?;
+
+        // Verify the individual envelope was created correctly
+        assert!(individual.is_individual);
+        assert_eq!(individual.user_id, Some("alice".to_string()));
+
+        // get_shared_envelope_by_name should NOT return this individual envelope
+        // because it checks is_individual=false
+        let result = get_shared_envelope_by_name(&db, "individual_game").await?;
+
+        assert!(
+            result.is_none(),
+            "get_shared_envelope_by_name should not return individual envelopes"
+        );
 
         Ok(())
     }

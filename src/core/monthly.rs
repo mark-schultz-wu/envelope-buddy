@@ -12,6 +12,7 @@ use crate::{
 };
 use chrono::{Datelike, NaiveDate, Utc};
 use sea_orm::{Set, TransactionTrait, prelude::*};
+use std::fmt::Write;
 
 const LAST_MONTHLY_UPDATE_KEY: &str = "last_monthly_update";
 
@@ -237,23 +238,21 @@ pub async fn process_monthly_updates(
 ///
 /// # Returns
 /// * A formatted string summarizing the update
-#[must_use]
-pub fn format_monthly_update_summary(result: &MonthlyUpdateResult) -> String {
-    use std::fmt::Write;
-
+///
+/// # Errors
+/// Returns an error if formatting fails (this should never happen in practice)
+pub fn format_monthly_update_summary(result: &MonthlyUpdateResult) -> Result<String> {
     let mut summary = format!(
         "Monthly Update - {} - Processed {} envelopes\n",
         result.update_date.format("%B %Y"),
         result.total_envelopes_processed
     );
 
-    // write! is infallible when writing to String, so unwrap is safe
     write!(
         summary,
         "  Rollover: {} envelopes | Reset: {} envelopes\n\n",
         result.rollover_count, result.reset_count
-    )
-    .unwrap();
+    )?;
 
     for envelope_result in &result.updated_envelopes {
         let change_type = if envelope_result.rollover {
@@ -270,11 +269,10 @@ pub fn format_monthly_update_summary(result: &MonthlyUpdateResult) -> String {
             envelope_result.old_balance,
             envelope_result.new_balance,
             envelope_result.allocation
-        )
-        .unwrap();
+        )?;
     }
 
-    summary
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -559,7 +557,7 @@ mod tests {
             ],
         };
 
-        let summary = format_monthly_update_summary(&result);
+        let summary = format_monthly_update_summary(&result)?;
 
         // Verify summary contains key information
         assert!(summary.contains("March 2024"));
