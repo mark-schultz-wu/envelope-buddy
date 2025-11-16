@@ -131,37 +131,54 @@ pub async fn autocomplete_category(
         .collect()
 }
 
-/// Provides autocomplete suggestions for Discord user IDs.
+/// Provides autocomplete suggestions for user nicknames.
 ///
-/// This function provides the command author's user ID as the primary suggestion
-/// since the user parameter defaults to "self" when not specified. This makes it
-/// easy for users to explicitly specify themselves or type a different user ID.
+/// This function shows all configured nicknames that match the partial input.
+/// Only nicknames are accepted - no Discord IDs or mentions.
 ///
 /// # Arguments
 /// * `ctx` - The poise context
 /// * `partial` - The partial string the user has typed so far
 ///
 /// # Returns
-/// A vector of user ID strings - typically just the author's ID
+/// A vector of nickname strings for autocomplete suggestions
 #[allow(clippy::unused_async)]
 pub async fn autocomplete_user(
     ctx: poise::Context<'_, BotData, Error>,
     partial: &str,
 ) -> Vec<String> {
+    use crate::config::users;
+
     let author_id = ctx.author().id.to_string();
+    let author_nickname = users::get_nickname(&author_id);
 
-    // If no partial input, suggest the author's ID (which is the default)
-    if partial.is_empty() {
-        return vec![author_id];
-    }
-
+    // Get all configured nicknames
+    let all_nicknames = users::get_all_nicknames();
     let partial_lower = partial.to_lowercase();
 
-    // If the author's ID matches, suggest it
-    if author_id.to_lowercase().contains(&partial_lower) {
-        vec![author_id]
-    } else {
-        // Allow them to type any user ID (e.g., for admin operations)
-        vec![partial.to_string()]
+    let mut suggestions = Vec::new();
+
+    // If no partial input, suggest author's nickname first, then all others
+    if partial.is_empty() {
+        if let Some(ref nick) = author_nickname {
+            suggestions.push(nick.clone());
+        }
+        suggestions.extend(all_nicknames.into_iter().filter(|nick| {
+            Some(nick) != author_nickname.as_ref() // Don't duplicate author's nickname
+        }));
+        suggestions.sort();
+        suggestions.truncate(25);
+        return suggestions;
     }
+
+    // Find matching nicknames
+    for nickname in all_nicknames {
+        if nickname.to_lowercase().contains(&partial_lower) {
+            suggestions.push(nickname);
+        }
+    }
+
+    suggestions.sort();
+    suggestions.truncate(25); // Discord autocomplete limit
+    suggestions
 }

@@ -9,6 +9,7 @@ mod inner {
 
     use crate::{
         bot::{BotData, handlers::autocomplete},
+        config::users,
         core::{envelope, transaction},
         errors::{Error, Result},
     };
@@ -25,7 +26,7 @@ mod inner {
         #[autocomplete = "autocomplete::autocomplete_envelope_name"]
         envelope_name: String,
         #[description = "Amount to spend"] amount: f64,
-        #[description = "Optional user ID (for individual envelopes)"]
+        #[description = "Optional user nickname (for individual envelopes)"]
         #[autocomplete = "autocomplete::autocomplete_user"]
         user: Option<String>,
         #[description = "Optional description of the expense"] description: Option<String>,
@@ -43,9 +44,24 @@ mod inner {
             return Ok(());
         }
 
-        // Use provided user ID or default to the command author
+        // Resolve user nickname or default to the command author
         let author_id = ctx.author().id.to_string();
-        let target_user_id = user.unwrap_or_else(|| author_id.clone());
+        let target_user_id = if let Some(nickname) = user {
+            // Try to resolve the provided nickname
+            if let Some(user_id) = users::resolve_nickname(&nickname) {
+                user_id
+            } else {
+                ctx.say(&format!(
+                    "❌ Unknown nickname '{}'. Available nicknames: {}",
+                    nickname,
+                    users::get_all_nicknames().join(", ")
+                ))
+                .await?;
+                return Ok(());
+            }
+        } else {
+            author_id.clone()
+        };
         let desc = description.as_deref().unwrap_or(DEFAULT_DESCRIPTION);
 
         // Get database connection from context
@@ -96,7 +112,7 @@ mod inner {
         #[autocomplete = "autocomplete::autocomplete_envelope_name"]
         envelope_name: String,
         #[description = "Amount to add"] amount: f64,
-        #[description = "Optional user ID (for individual envelopes)"]
+        #[description = "Optional user nickname (for individual envelopes)"]
         #[autocomplete = "autocomplete::autocomplete_user"]
         user: Option<String>,
         #[description = "Optional description of the income"] description: Option<String>,
@@ -114,9 +130,24 @@ mod inner {
             return Ok(());
         }
 
-        // Use provided user ID or default to the command author
+        // Resolve user nickname or default to the command author
         let author_id = ctx.author().id.to_string();
-        let target_user_id = user.unwrap_or_else(|| author_id.clone());
+        let target_user_id = if let Some(nickname) = user {
+            // Try to resolve the provided nickname
+            if let Some(user_id) = users::resolve_nickname(&nickname) {
+                user_id
+            } else {
+                ctx.say(&format!(
+                    "❌ Unknown nickname '{}'. Available nicknames: {}",
+                    nickname,
+                    users::get_all_nicknames().join(", ")
+                ))
+                .await?;
+                return Ok(());
+            }
+        } else {
+            author_id.clone()
+        };
         let desc = description.as_deref().unwrap_or(DEFAULT_DESCRIPTION);
 
         // Get database connection from context

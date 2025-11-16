@@ -53,23 +53,164 @@ pub fn get_nickname(user_id: &str) -> Option<String> {
     nicknames.get(user_id).cloned()
 }
 
+/// Gets the user ID for a given nickname, if configured.
+///
+/// # Arguments
+///
+/// * `nickname` - The nickname to look up
+///
+/// # Returns
+///
+/// `Some(user_id)` if a user ID is configured for this nickname, `None` otherwise.
+#[must_use]
+pub fn get_user_id_by_nickname(nickname: &str) -> Option<String> {
+    let nicknames = get_user_nicknames();
+    nicknames
+        .iter()
+        .find(|(_, nick)| nick.to_lowercase() == nickname.to_lowercase())
+        .map(|(user_id, _)| user_id.clone())
+}
+
+/// Gets all available user nicknames for autocomplete suggestions.
+///
+/// # Returns
+///
+/// A vector of all configured nicknames.
+#[must_use]
+pub fn get_all_nicknames() -> Vec<String> {
+    get_user_nicknames().into_values().collect()
+}
+
+/// Resolves a nickname to a Discord user ID.
+///
+/// This function only accepts configured nicknames for simplicity.
+///
+/// # Arguments
+///
+/// * `nickname` - The nickname to resolve
+///
+/// # Returns
+///
+/// `Some(user_id)` if the nickname is configured, `None` otherwise.
+#[must_use]
+pub fn resolve_nickname(nickname: &str) -> Option<String> {
+    get_user_id_by_nickname(nickname.trim())
+}
+
+/// Gets a display name for a user ID.
+///
+/// This is the reverse of `resolve_user_input` - it converts a user ID
+/// back to a human-readable format for display purposes.
+///
+/// # Arguments
+///
+/// * `user_id` - The Discord user ID
+///
+/// # Returns
+///
+/// A display string: nickname if configured, otherwise the raw user ID.
+#[must_use]
+pub fn get_user_display_name(user_id: &str) -> String {
+    get_nickname(user_id).unwrap_or_else(|| user_id.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use temp_env;
 
     #[test]
-    fn test_get_user_nicknames_empty_when_not_configured() {
-        // This test assumes the env vars aren't set in the test environment
-        // In actual use, they would be loaded from .env
-        let nicknames = get_user_nicknames();
-        // The result depends on whether env vars are set, so we just check it returns a HashMap
-        assert!(nicknames.is_empty() || !nicknames.is_empty());
+    fn test_with_temp_env() {
+        temp_env::with_vars(
+            vec![
+                ("COUPLE_USER_ID_1", Some("123456789")),
+                ("USER_NICKNAME_1", Some("Alice")),
+                ("COUPLE_USER_ID_2", Some("987654321")),
+                ("USER_NICKNAME_2", Some("Bob")),
+            ],
+            || {
+                // Test get_nickname
+                assert_eq!(get_nickname("123456789"), Some("Alice".to_string()));
+                assert_eq!(get_nickname("987654321"), Some("Bob".to_string()));
+                assert_eq!(get_nickname("nonexistent"), None);
+
+                // Test get_user_id_by_nickname
+                assert_eq!(get_user_id_by_nickname("Alice"), Some("123456789".to_string()));
+                assert_eq!(get_user_id_by_nickname("Bob"), Some("987654321".to_string()));
+                assert_eq!(get_user_id_by_nickname("Charlie"), None);
+
+                // Test case insensitive
+                assert_eq!(get_user_id_by_nickname("alice"), Some("123456789".to_string()));
+                assert_eq!(get_user_id_by_nickname("ALICE"), Some("123456789".to_string()));
+
+                // Test resolve_nickname (wrapper function)
+                assert_eq!(resolve_nickname("Alice"), Some("123456789".to_string()));
+                assert_eq!(resolve_nickname("alice"), Some("123456789".to_string()));
+                assert_eq!(resolve_nickname("  Alice  "), Some("123456789".to_string())); // Trims whitespace
+                assert_eq!(resolve_nickname("Charlie"), None);
+
+                // Test get_all_nicknames
+                let mut nicknames = get_all_nicknames();
+                nicknames.sort();
+                assert_eq!(nicknames, vec!["Alice", "Bob"]);
+
+                // Test get_user_display_name
+                assert_eq!(get_user_display_name("123456789"), "Alice");
+                assert_eq!(get_user_display_name("987654321"), "Bob");
+                assert_eq!(get_user_display_name("nonexistent"), "nonexistent");
+            },
+        );
     }
 
     #[test]
-    fn test_get_nickname_returns_none_when_not_found() {
-        let result = get_nickname("nonexistent_user_id");
-        // Will be None unless this exact ID is configured
-        assert!(result.is_none() || result.is_some());
+    fn test_partial_configuration() {
+        temp_env::with_vars(
+            vec![
+                ("COUPLE_USER_ID_1", Some("123456789")),
+                ("USER_NICKNAME_1", Some("Alice")),
+                // Clear other user env vars to test partial config
+                ("COUPLE_USER_ID_2", None),
+                ("USER_NICKNAME_2", None),
+            ],
+            || {
+                assert_eq!(get_nickname("123456789"), Some("Alice".to_string()));
+                assert_eq!(get_nickname("987654321"), None);
+                assert_eq!(get_user_id_by_nickname("Alice"), Some("123456789".to_string()));
+                assert_eq!(get_user_id_by_nickname("Bob"), None);
+
+                let nicknames = get_all_nicknames();
+                assert_eq!(nicknames, vec!["Alice"]);
+            },
+        );
+    }
+
+    #[test]
+    fn test_resolve_nickname_edge_cases() {
+        temp_env::with_vars(
+            vec![
+                ("COUPLE_USER_ID_1", Some("123456789")),
+                ("USER_NICKNAME_1", Some("Alice")),
+            ],
+            || {
+                // Test with empty string
+                assert_eq!(resolve_nickname(""), None);
+
+                // Test with whitespace only
+                assert_eq!(resolve_nickname("   "), None);
+
+                // Test with whitespace around nickname (should be trimmed)
+                assert_eq!(resolve_nickname("  Alice  "), Some("123456789".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn test_get_user_display_name_fallback() {
+        // Test without any env vars set
+        assert_eq!(get_user_display_name("123456789"), "123456789"); // Falls back to user ID
+        assert_eq!(get_user_display_name("nonexistent"), "nonexistent");
+
+        // Test with empty user ID
+        assert_eq!(get_user_display_name(""), "");
     }
 }

@@ -73,7 +73,7 @@ pub enum Error {
         count: usize,
     },
 
-    /// Individual envelope created without required user_id
+    /// Individual envelope created without required `user_id`
     #[error(
         "Invalid envelope: Individual envelope '{name}' cannot have user_id=None. Individual envelopes must belong to a specific user."
     )]
